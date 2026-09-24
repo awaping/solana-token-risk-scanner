@@ -20,7 +20,8 @@ const help = () => `
 ${c.bold('Solana Token Risk Scanner')} — diagnostic de sécurité on-chain d'un token SPL
 
 ${c.bold('Usage')}
-  npm run scan -- <MINT_ADDRESS> [options]
+  npm run scan -- <MINT_ADDRESS> [options]      analyse complète d'un token
+  npm run stream -- [options]                  détection temps réel des lancements (voir --help)
   sol-risk <MINT_ADDRESS> [options]            (après npm run build && npm link)
 
 ${c.bold('Options')}
@@ -63,6 +64,12 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 async function main(): Promise<number> {
   loadDotEnv();
+
+  // Sous-commande temps réel : `sol-risk stream [options]`.
+  if (process.argv[2] === 'stream') {
+    const { runStream } = await import('./stream/cli.js');
+    return runStream(process.argv.slice(3));
+  }
 
   const { values, positionals } = parseArgs({
     allowPositionals: true,

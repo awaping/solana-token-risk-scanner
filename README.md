@@ -10,6 +10,13 @@ Il interroge directement la blockchain via `@solana/web3.js`, sans API tierce, e
 | 🟠 **ORANGE** | 31 – 69 | Signaux d'alerte : forte concentration, liquidité faible, créateur suspect… |
 | 🔴 **ROUGE** | 70 – 100 | Pattern de manipulation avéré : wallets clonés, supply monopolisée, autorités dangereuses… |
 
+Deux modes complémentaires :
+
+| Mode | Commande | Usage | Délai |
+|---|---|---|---|
+| **Scan** | `npm run scan -- <MINT>` | Audit complet d'un token donné : 6 modules on-chain | quelques secondes |
+| **Stream** | `npm run stream` | Surveille **tous** les lancements Pump.fun en direct : verdict à la création, puis après la fenêtre de bundle | ~20–300 µs de calcul après réception |
+
 ---
 
 ## Sommaire
@@ -18,6 +25,7 @@ Il interroge directement la blockchain via `@solana/web3.js`, sans API tierce, e
 - [Installation](#installation)
 - [Utilisation](#utilisation)
 - [Exemple de rapport](#exemple-de-rapport)
+- [Mode stream (temps réel)](#mode-stream-temps-réel)
 - [Moteur de scoring](#moteur-de-scoring)
 - [Architecture](#architecture)
 - [Choisir un endpoint RPC](#choisir-un-endpoint-rpc)
@@ -104,6 +112,8 @@ npm run demo -- raydium   # pool Raydium + mint authority active
 | `CREATOR_TX_SCAN_LIMIT` | `100` | Transactions du créateur inspectées |
 | `MINT_HISTORY_MAX_PAGES` | `5` | Pages de 1 000 signatures parcourues pour retrouver la création du mint |
 | `HOLDER_CENSUS` | `true` | Active le recensement complet des holders |
+| `SOLANA_WS_URL` | dérivé de `SOLANA_RPC_URL` | Mode stream : endpoint(s) WebSocket, séparés par des virgules |
+| `YELLOWSTONE_GRPC_URL` / `YELLOWSTONE_GRPC_TOKEN` | — | Mode stream : source gRPC Geyser (optionnelle) |
 
 ### Compilation
 
@@ -162,6 +172,104 @@ Extrait de `npm run demo` (scénario simulé) :
 
 ---
 
+## Mode stream (temps réel)
+
+Le mode stream écoute **en continu** toutes les transactions du programme Pump.fun et rend un verdict sur chaque nouveau token **au moment même où sa création est reçue**. Aucune requête RPC n'est faite sur le chemin critique.
+
+```bash
+npm run stream                                  # WebSocket dérivé de SOLANA_RPC_URL
+npm run stream -- --only vert                   # n'affiche que les lancements propres
+npm run stream -- --jsonl > lancements.jsonl    # une ligne JSON par verdict (pour un bot)
+npm run stream -- --webhook https://mon-bot/hook
+npm run demo:stream                             # démo hors-ligne (faux nœud WebSocket)
+npm run bench                                   # mesure de la latence du chemin critique
+```
+
+### Comment un lancement est analysé
+
+```
+ nœud Solana ──(WebSocket logsSubscribe / gRPC Geyser, commitment "processed")──▶ message brut
+      │  horodatage haute résolution dès la réception
+      ▼
+ décodage des logs "Program data:" → CreateEvent / TradeEvent (Borsh, sans RPC)
+      │
+      ├─ T0  création        réputation du créateur (cache mémoire O(1)), achat initial du dev,
+      │                      symbole copié  ─────────────────────────────▶ verdict en quelques µs
+      ├─ T1  fenêtre bundle   acheteurs des N premiers slots : snipers, bundle Jito, montants SOL
+      │                      identiques (wallets clonés), part de supply raflée ─▶ ~0,8 s après
+      ├─ T2  enrichissement   historique RPC du créateur (tokens déjà déployés, âge du wallet),
+      │                      en arrière-plan ─────────────────────────────▶ quelques secondes
+      └─ ALERTE              le dev vend pendant la période de suivi ─────▶ immédiat
+```
+
+| Phase | Signal | Effet sur le score |
+|---|---|---|
+| T0 | Créateur vu ≥ 2 / 3 / 5 / 10 fois en 24 h | +20 / +40 / +65 / +90 (plancher 70 à 10) |
+| T0 | Créateur ayant déjà revendu rapidement ses tokens | +25 (1 fois) · +45 et plancher 70 (≥ 3) |
+| T0 | Achat initial du dev > 5 / 10 / 20 % | +10 / +25 / +40 (plancher 70 au-delà de 30 %) |
+| T0 | Même symbole lancé il y a moins de 30 min | +10 |
+| T1 | Acheteurs dans le slot de création : 3 / 6 / 10 | +15 / +30 / +45 |
+| T1 | Supply raflée par ces acheteurs : 10 / 25 / 40 % | +15 / +30 / +45 (plancher 75 si dev + bundle ≥ 40 %) |
+| T1 | ≥ 3 achats de montant SOL identique (±0,1 %) | +40, **plancher 80** (wallets clonés) |
+| T2 | Tokens déjà créés (historique RPC), wallet jetable, wallet < 48 h | voir le scan complet |
+| ALERTE | Le dev vend | +40, **plancher 70** |
+
+### Pourquoi c'est rapide
+
+- **Zéro RPC sur le chemin critique** : tout ce qu'il faut pour le verdict T0 est dans les logs de la transaction de création (nom, symbole, mint, créateur, achat du dev).
+- **Client WebSocket minimal** sur `ws`, sans la couche de validation de web3.js ; compression désactivée ; `commitment: processed` (le plus tôt possible, avant confirmation).
+- **Course entre sources** : plusieurs `--ws` et un `--grpc` peuvent tourner en parallèle ; la première source qui livre une transaction gagne, les doublons sont ignorés. Les statistiques indiquent quelle source gagne le plus souvent et de combien de millisecondes les autres sont en retard.
+- **Décodage paresseux** : pour les trades de tokens non suivis (la grande majorité du trafic), seule une clé brute du mint est lue, sans encodage base58.
+- **Préchauffage JIT** : au démarrage, 20 000 transactions synthétiques traversent le chemin complet pour que V8 compile le code optimisé *avant* le premier vrai lancement (sans cela, la première décision prend ~12 ms au lieu de ~0,2 ms).
+- **Réputation persistée** (`.cache/creators.json`) : plus le flux tourne longtemps, plus il reconnaît les déployeurs en série.
+
+Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transactions) : **~20 µs** par transaction et **~100 µs** (p50) de la réception d'une création au verdict T0, soit une capacité de plus de 20 000 tx/s sur un seul cœur. Le flux Pump.fun réel en compte quelques centaines par seconde. En production, la commande affiche ses propres percentiles toutes les 30 s.
+
+### Aller encore plus vite
+
+À ce niveau, le calcul local (des microsecondes) est négligeable : **c'est le réseau qui décide** (quelques millisecondes à plusieurs dizaines de millisecondes par saut, un slot Solana ≈ 400 ms).
+
+1. **Yellowstone gRPC** (Geyser) plutôt que WebSocket : `npm install @triton-one/yellowstone-grpc`, puis `--grpc <url> --grpc-token <jeton>` (Helius, Triton, QuickNode, Shyft…).
+2. **Mettre plusieurs fournisseurs en course** : `--ws wss://fournisseur-a --ws wss://fournisseur-b --grpc …`.
+3. **Héberger au plus près des validateurs** : serveur à Francfort, Amsterdam ou New York, dans le même datacenter que votre fournisseur RPC.
+4. Pour l'exécution d'ordres (hors du périmètre de cet outil) : transactions via bundles Jito ou connexions « stake-weighted » (SWQoS).
+
+### Options du mode stream
+
+| Option | Description |
+|---|---|
+| `--ws <url>` | Endpoint WebSocket, répétable (défaut : `$SOLANA_WS_URL`, sinon dérivé de `$SOLANA_RPC_URL`) |
+| `--grpc <url>` / `--grpc-token <jeton>` | Source Yellowstone gRPC (défaut : `$YELLOWSTONE_GRPC_URL` / `$YELLOWSTONE_GRPC_TOKEN`) |
+| `--bundle-slots <n>` | Slots observés avant le verdict T1 (défaut 2 : création + slot suivant) |
+| `--track <s>` | Durée de suivi des ventes du dev (défaut 300 s) |
+| `--no-enrich` / `--enrich-tx <n>` | Désactive / dimensionne l'enrichissement RPC des créateurs (défaut 25 tx) |
+| `--deep-scan <s>` | Lance le scan complet des tokens non ROUGE N secondes après leur création |
+| `--only <niveaux>` | Filtre l'affichage : `vert`, `orange`, `rouge` ou une combinaison (`vert,orange`) |
+| `--jsonl` | Une ligne JSON par verdict sur stdout ; les messages d'état vont sur stderr |
+| `--webhook <url>` | POST JSON de chaque verdict affiché (bot Telegram / Discord / trading) |
+| `--cache <fichier>` | Cache de réputation (défaut `.cache/creators.json`) |
+| `--stats <s>` | Statistiques de débit, latence et course des sources (défaut 30 s) |
+| `--no-warmup` | Saute le préchauffage JIT |
+
+### Exemple (`npm run demo:stream`)
+
+```text
+  préchauffage JIT : 20 000 tx synthétiques en 970 ms
+⚡ T0     VERT     0  HFROG   Honest Frog · DUs9…txAN · dev 8YXd…qXdp · slot 330000000 +0 slot · décision 240 µs
+◆ T1     VERT     0  HFROG   bundle 2 slot(s) : 1 acheteur · 0,80 % supply · dev 1,50 %
+⚡ T0     VERT    25  MOON    Moon Rocket · BYmF…q8qZ · dev 6zNV…ePwb · slot 330000003 +0 slot · décision 304 µs
+                      ▲ Achat initial du dev : 12,00 % de la supply
+◆ T1     ROUGE  100 (+75)  MOON   bundle 2 slot(s) : 7 acheteurs · 28,00 % supply · dev 12,00 % · 7 clones
+                      ✖ Bundle au lancement : 7 acheteurs dans le slot de création, 7 sur les 2 premiers slots → 28,00 % de la supply
+                      ✖ Wallets clonés : 7 achats identiques de 1,50 SOL (±0,1 %) dans la fenêtre
+⚡ T0     ORANGE  40  CAT3    Serial CAT3 · 2aN2…qhP78 · dev FBVs…HiR6 · slot 330000008 +0 slot · décision 137 µs
+                      ▲ Créateur FBVs…HiR6 : 3 lancements en 24 h (déployeur en série)
+⚠ ALERTE ROUGE  100  MOON    le dev vend !
+                      ✖ Le dev a vendu ses tokens
+```
+
+---
+
 ## Moteur de scoring
 
 ### 1. Sous-scores (0-100) par module
@@ -216,7 +324,7 @@ L'outil combine deux mesures complémentaires :
 
 ```
 src/
-├── index.ts              # CLI (arguments, mode watch, codes de sortie)
+├── index.ts              # CLI : scan (arguments, mode watch, codes de sortie) et sous-commande stream
 ├── scanner.ts            # Orchestration parallèle des modules, isolation des erreurs
 ├── config.ts             # .env, options, masquage des clés d'API
 ├── constants.ts          # Programmes & adresses connus (Pump.fun, PumpSwap, Raydium, Orca, Meteora…)
@@ -232,9 +340,18 @@ src/
 │   └── creator.ts        # Identification et historique du créateur
 ├── scoring/engine.ts     # Barème, planchers, score global
 ├── report/console.ts     # Rendu terminal + JSON
+├── stream/               # Mode temps réel
+│   ├── cli.ts            # Commande stream : sources, sorties (console, JSONL, webhook), stats
+│   ├── engine.ts         # Moteur : course multi-sources, suivi des lancements, T0 / T1 / T2 / alertes
+│   ├── events.ts         # Décodage des événements Anchor Pump.fun depuis les logs
+│   ├── fast-score.ts     # Score rapide (fonction pure) + statistiques de bundle
+│   ├── reputation.ts     # Cache de réputation des créateurs (persisté)
+│   ├── warmup.ts         # Préchauffage JIT du chemin critique
+│   ├── synthetic.ts      # Transactions synthétiques (préchauffage, tests, démo, bench)
+│   └── sources/          # WebSocket (logsSubscribe) et Yellowstone gRPC
 └── utils/                # BigNumber (stats), formatage FR, couleurs ANSI
 test/                     # Tests unitaires + bout en bout sur RPC simulé
-scripts/demo.ts           # Démo hors-ligne
+scripts/                  # demo.ts, demo-stream.ts (démos hors-ligne), bench.ts (latence)
 ```
 
 Tous les montants on-chain (u64) sont manipulés en `bigint`. Les pourcentages et les statistiques (moyenne, variance, écart-type, Gini) sont calculés en précision arbitraire avec **bignumber.js**, pour éviter toute perte de précision au-delà de 2^53.
@@ -273,6 +390,7 @@ La performance dépend avant tout de la **qualité de l'endpoint RPC**, bien plu
 - **Top 20 = top 20 comptes de token** (`getTokenLargestAccounts`). Après exclusion de la bonding curve et des pools, l'échantillon de wallets peut contenir moins de 20 entrées.
 - **Pools supportées** : PumpSwap, Raydium AMM v4 et Raydium CPMM, en paire **SOL** (WSOL). Repli générique pour les autres pools détectées dans le top holders (Orca, Meteora, Raydium CLMM…) dont le compte de pool détient directement son vault WSOL. Les pools cotées uniquement en USDC ne sont pas valorisées.
 - **Historique du créateur** limité à `CREATOR_TX_SCAN_LIMIT` transactions : au-delà, le nombre de tokens créés est une borne basse, signalée comme telle.
+- **Mode stream** : le commitment `processed` est le plus rapide mais une transaction peut, rarement, disparaître lors d'un fork ; le verdict T0 repose sur la réputation *observée* (cache vide au premier lancement, d'où l'intérêt de laisser tourner le flux) ; si Pump.fun modifie le format de ses événements, le décodeur ignore les messages illisibles au lieu de planter ; si les logs d'une création sont tronqués (limite de 10 Ko), elle est retrouvée via RPC avec un délai.
 - Les bonding curves Pump.fun créées avant l'ajout du champ `creator` passent par la recherche de la transaction de création du mint (limitée à `MINT_HISTORY_MAX_PAGES` pages).
 
 ---
@@ -280,8 +398,9 @@ La performance dépend avant tout de la **qualité de l'endpoint RPC**, bien plu
 ## Tests
 
 ```bash
-npm test          # tests unitaires + bout en bout (RPC JSON simulé, aucun réseau requis)
+npm test          # tests unitaires + bout en bout (RPC et WebSocket simulés, aucun réseau requis)
 npm run typecheck
+npm run bench     # latence du chemin critique du mode stream
 ```
 
 Les tests de bout en bout démarrent un **faux nœud Solana JSON-RPC** en mémoire (`test/fixtures/mock-rpc.ts`) et exécutent le scanner complet via `@solana/web3.js` sur trois scénarios :
@@ -289,6 +408,8 @@ Les tests de bout en bout démarrent un **faux nœud Solana JSON-RPC** en mémoi
 - un rug Pump.fun gradué sur PumpSwap : wallets clonés, dusting, liquidité minuscule ;
 - une bonding curve saine ;
 - une pool Raydium AMM v4 avec mint authority active.
+
+Le mode stream est testé de la même façon, avec un faux nœud WebSocket : abonnement, reconnexion après coupure, verdicts T0 / T1 / T2 / alerte, course entre sources, logs tronqués, puis la commande complète lancée en sous-processus (sortie JSONL, arrêt sur SIGINT).
 
 ---
 

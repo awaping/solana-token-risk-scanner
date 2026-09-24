@@ -103,33 +103,29 @@ export function extractInitializedMints(tx: ParsedTransactionWithMeta): string[]
   return mints;
 }
 
-export async function analyzeCreator(
-  rpc: RpcClient,
-  config: ScannerConfig,
-  token: TokenInfo,
-  identity: CreatorIdentity,
-): Promise<CreatorAnalysis> {
-  const creator = new PublicKey(identity.address);
-  const mint = new PublicKey(token.mint);
-  const scanLimit = config.creatorTxScanLimit;
+/** Historique d'un wallet : activité, âge et mints qu'il a lui-même initialisés. */
+export interface CreatorHistory {
+  solBalance: number;
+  createdMints: string[];
+  txScanned: number;
+  fullHistory: boolean;
+  signatureCount: number;
+  walletAgeDays?: number;
+  oldestActivity?: Date;
+}
 
-  const [lamports, tokenAccounts, signatures] = await Promise.all([
+/**
+ * Parcourt les `scanLimit` dernières transactions d'un wallet et recense les
+ * mints qu'il a initialisés (InitializeMint / InitializeMint2 signés par lui).
+ * Partagé par le scan complet et l'enrichissement asynchrone du mode stream.
+ */
+export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, scanLimit: number): Promise<CreatorHistory> {
+  const [lamports, signatures] = await Promise.all([
     rpc.call((c) => c.getBalance(creator)),
-    rpc.call((c) => c.getTokenAccountsByOwner(creator, { mint })),
     // Au moins 1 signature pour estimer l'activité même si le scan est désactivé.
     fetchSignatures(rpc, creator, Math.max(scanLimit, 1)),
   ]);
 
-  let held = 0n;
-  for (const { pubkey, account } of tokenAccounts.value) {
-    try {
-      held += unpackAccount(pubkey, account, account.owner).amount;
-    } catch {
-      // compte illisible ignoré
-    }
-  }
-
-  // Inspection des transactions réussies à la recherche de créations de mint.
   const created = new Set<string>();
   const toScan = scanLimit > 0 ? signatures.filter((s) => s.err === null).slice(0, scanLimit) : [];
   let txScanned = 0;
@@ -149,20 +145,46 @@ export async function analyzeCreator(
   const fullHistory = signatures.length < Math.max(scanLimit, 1);
   const oldest = signatures[signatures.length - 1];
   const oldestActivity = oldest?.blockTime ? new Date(oldest.blockTime * 1000) : undefined;
-  const createdMints = [...created];
+
+  return {
+    solBalance: lamportsToSol(BigInt(lamports)),
+    createdMints: [...created],
+    txScanned,
+    fullHistory,
+    signatureCount: signatures.length,
+    walletAgeDays: fullHistory && oldestActivity ? (Date.now() - oldestActivity.getTime()) / 86_400_000 : undefined,
+    oldestActivity,
+  };
+}
+
+export async function analyzeCreator(
+  rpc: RpcClient,
+  config: ScannerConfig,
+  token: TokenInfo,
+  identity: CreatorIdentity,
+): Promise<CreatorAnalysis> {
+  const creator = new PublicKey(identity.address);
+  const mint = new PublicKey(token.mint);
+
+  const [history, tokenAccounts] = await Promise.all([
+    scanCreatorHistory(rpc, creator, config.creatorTxScanLimit),
+    rpc.call((c) => c.getTokenAccountsByOwner(creator, { mint })),
+  ]);
+
+  let held = 0n;
+  for (const { pubkey, account } of tokenAccounts.value) {
+    try {
+      held += unpackAccount(pubkey, account, account.owner).amount;
+    } catch {
+      // compte illisible ignoré
+    }
+  }
 
   return {
     address: identity.address,
     source: identity.source,
-    solBalance: lamportsToSol(BigInt(lamports)),
+    ...history,
     holdingPct: percentOf(held, token.supply),
-    createdMints,
-    previousTokensCreated: createdMints.filter((m) => m !== token.mint).length,
-    txScanned,
-    fullHistory,
-    signatureCount: signatures.length,
-    walletAgeDays:
-      fullHistory && oldestActivity ? (Date.now() - oldestActivity.getTime()) / 86_400_000 : undefined,
-    oldestActivity,
+    previousTokensCreated: history.createdMints.filter((m) => m !== token.mint).length,
   };
 }

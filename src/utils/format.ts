@@ -27,8 +27,16 @@ export const c = {
   bgYellow: wrap(43, 49),
 };
 
-const nf = (digits: number) =>
-  new Intl.NumberFormat('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+// Les instances Intl.NumberFormat sont coûteuses à créer : cache par précision.
+const formatters = new Map<number, Intl.NumberFormat>();
+const nf = (digits: number): Intl.NumberFormat => {
+  let formatter = formatters.get(digits);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    formatters.set(digits, formatter);
+  }
+  return formatter;
+};
 
 /** 12.3456 → "12,35 %" */
 export const fmtPct = (value: number, digits = 2): string => `${nf(digits).format(value)} %`;
