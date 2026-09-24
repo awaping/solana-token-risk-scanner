@@ -61,3 +61,9 @@ test('préchauffage JIT : exécute le chemin complet sans effet de bord', () => 
   assert.equal(result.iterations, 2_000);
   assert.ok(verdicts > 80);
 });
+
+test('stream avec une adresse : erreur explicite qui oriente vers `scan`', async () => {
+  const { runStream } = await import('../src/stream/cli.js');
+  const mint = key();
+  await assert.rejects(() => runStream([mint]), new RegExp(`npm run scan -- ${mint}`));
+});

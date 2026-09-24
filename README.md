@@ -61,7 +61,14 @@ npm install
 cp .env.example .env        # puis renseigner SOLANA_RPC_URL
 ```
 
-Dépendances d'exécution : `@solana/web3.js`, `@solana/spl-token` et `bignumber.js`. Aucune autre : les couleurs ANSI, les arguments CLI et le chargement du `.env` passent par Node.js natif.
+Dépendances d'exécution : `@solana/web3.js`, `@solana/spl-token` et `bignumber.js`, plus `ws` et `bs58` pour le mode stream. Les couleurs ANSI, les arguments CLI et le chargement du `.env` passent par Node.js natif.
+
+> **Deux commandes, deux usages** : `npm run scan -- <MINT>` analyse **un** token donné ; `npm run stream` (sans adresse) surveille **tous** les nouveaux lancements. Avec npm, les options se placent après `--` : `npm run scan -- <MINT> --json`.
+
+**Sécurité des dépendances** (`npm audit` : 0 vulnérabilité) :
+- `bigint-buffer`, module natif ancien utilisé par `@solana/spl-token` pour lire les entiers u64, a une faille sans correctif publié (GHSA-3gc7-fjrx-p6mg). Il est remplacé par `vendor/bigint-buffer`, une version JavaScript pure à l'API identique : aucun code natif, aucune compilation à l'installation.
+- `jayson`, client RPC de `@solana/web3.js`, est forcé en v5 : elle n'embarque plus `stream-json` ni `uuid`, qui étaient vulnérables.
+- Les avertissements npm `install-scripts` sur `bufferutil`, `utf-8-validate` et `esbuild` sont sans gravité : les deux premiers sont des accélérateurs optionnels de WebSocket, et `esbuild` (utilisé par `tsx`) fonctionne sans son script.
 
 ---
 
@@ -229,7 +236,7 @@ Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transacti
 
 À ce niveau, le calcul local (des microsecondes) est négligeable : **c'est le réseau qui décide** (quelques millisecondes à plusieurs dizaines de millisecondes par saut, un slot Solana ≈ 400 ms).
 
-1. **Yellowstone gRPC** (Geyser) plutôt que WebSocket : `npm install @triton-one/yellowstone-grpc`, puis `--grpc <url> --grpc-token <jeton>` (Helius, Triton, QuickNode, Shyft…).
+1. **Yellowstone gRPC** (Geyser) plutôt que WebSocket : `npm install @triton-one/yellowstone-grpc`, puis `--grpc <url> --grpc-token <jeton>` (Helius, Triton, QuickNode, Shyft…). Ce client n'est distribué que pour Linux et macOS : sous Windows, passez par WSL ou un VPS Linux.
 2. **Mettre plusieurs fournisseurs en course** : `--ws wss://fournisseur-a --ws wss://fournisseur-b --grpc …`.
 3. **Héberger au plus près des validateurs** : serveur à Francfort, Amsterdam ou New York, dans le même datacenter que votre fournisseur RPC.
 4. Pour l'exécution d'ordres (hors du périmètre de cet outil) : transactions via bundles Jito ou connexions « stake-weighted » (SWQoS).

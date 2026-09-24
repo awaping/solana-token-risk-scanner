@@ -160,9 +160,9 @@ function renderStats(s: EngineStats, elapsedS: number, reputationSize: number): 
 }
 
 export async function runStream(argv: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: argv,
-    allowPositionals: false,
+    allowPositionals: true,
     options: {
       ws: { type: 'string', multiple: true },
       grpc: { type: 'string' },
@@ -187,6 +187,13 @@ export async function runStream(argv: string[]): Promise<number> {
   if (values.help) {
     console.log(HELP());
     return 0;
+  }
+  if (positionals.length > 0) {
+    throw new Error(
+      `le mode stream ne prend pas d'adresse : il surveille en direct TOUS les nouveaux lancements Pump.fun.\n` +
+        `  → Pour analyser le token ${positionals[0]} : npm run scan -- ${positionals[0]}\n` +
+        `  → Pour surveiller les lancements           : npm run stream`,
+    );
   }
 
   const config: ScannerConfig = configFromEnv();

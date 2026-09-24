@@ -62,6 +62,20 @@ function positiveInt(value: string | undefined, flag: string, min = 0): number |
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** Traduit les erreurs d'arguments de node:util.parseArgs en message utile. */
+function describeCliError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: string } | null)?.code;
+  if (code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION') {
+    const option = /'([^']+)'/.exec(message)?.[1] ?? '';
+    return `option inconnue ${option}. Aide : npm run scan -- --help  ou  npm run stream -- --help`;
+  }
+  if (code === 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE') {
+    return `${message}\n  Aide : npm run scan -- --help  ou  npm run stream -- --help`;
+  }
+  return message;
+}
+
 async function main(): Promise<number> {
   loadDotEnv();
 
@@ -156,6 +170,6 @@ main()
     process.exitCode = code;
   })
   .catch((error: unknown) => {
-    console.error(c.red(`Erreur : ${error instanceof Error ? error.message : String(error)}`));
+    console.error(c.red(`Erreur : ${describeCliError(error)}`));
     process.exitCode = 1;
   });
