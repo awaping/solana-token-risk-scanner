@@ -52,6 +52,8 @@ export interface TradeEvent {
   mintKey: string;
   /** Adresse base58 du mint (encodée à la demande). */
   mint: string;
+  /** Clé de recherche rapide du wallet (base64 des 32 octets). */
+  userKey: string;
   solAmount: bigint;
   tokenAmount: bigint;
   isBuy: boolean;
@@ -159,6 +161,7 @@ class LazyTradeEvent implements TradeEvent {
   readonly virtualTokenReserves: bigint;
   #mint?: string;
   #user?: string;
+  #userKey?: string;
 
   constructor(private readonly data: Buffer) {
     if (data.length < 113) throw new RangeError('événement tronqué');
@@ -175,6 +178,9 @@ class LazyTradeEvent implements TradeEvent {
   }
   get user(): string {
     return (this.#user ??= bs58.encode(this.data.subarray(57, 89)));
+  }
+  get userKey(): string {
+    return (this.#userKey ??= this.data.toString('base64', 57, 89));
   }
 }
 

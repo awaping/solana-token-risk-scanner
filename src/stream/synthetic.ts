@@ -66,7 +66,15 @@ export function encodeCreateEvent(e: {
   return Buffer.concat(parts).toString('base64');
 }
 
-export function encodeTradeEvent(e: { mint: string; user: string; isBuy: boolean; sol: bigint; tokens: bigint }): string {
+export function encodeTradeEvent(e: {
+  mint: string;
+  user: string;
+  isBuy: boolean;
+  sol: bigint;
+  tokens: bigint;
+  /** Réserves virtuelles après le trade (par défaut : valeurs approximatives). */
+  reserves?: { sol: bigint; token: bigint };
+}): string {
   return Buffer.concat([
     anchorEventDiscriminator('TradeEvent'),
     pk(e.mint),
@@ -75,8 +83,8 @@ export function encodeTradeEvent(e: { mint: string; user: string; isBuy: boolean
     Buffer.from([e.isBuy ? 1 : 0]),
     pk(e.user),
     i64(Math.floor(Date.now() / 1000)),
-    u64(30_000_000_000n + e.sol),
-    u64(1_073_000_000_000_000n - e.tokens),
+    u64(e.reserves?.sol ?? 30_000_000_000n + e.sol),
+    u64(e.reserves?.token ?? 1_073_000_000_000_000n - e.tokens),
     u64(e.sol),
     u64(793_100_000_000_000n - e.tokens),
   ]).toString('base64');
@@ -120,7 +128,14 @@ export function createTxLogs(opts: {
   return logs;
 }
 
-export function tradeTxLogs(opts: { mint: string; user: string; isBuy?: boolean; sol?: bigint; tokens?: bigint }): string[] {
+export function tradeTxLogs(opts: {
+  mint: string;
+  user: string;
+  isBuy?: boolean;
+  sol?: bigint;
+  tokens?: bigint;
+  reserves?: { sol: bigint; token: bigint };
+}): string[] {
   return wrap(opts.isBuy === false ? 'Sell' : 'Buy', [
     encodeTradeEvent({
       mint: opts.mint,
@@ -128,8 +143,40 @@ export function tradeTxLogs(opts: { mint: string; user: string; isBuy?: boolean;
       isBuy: opts.isBuy !== false,
       sol: opts.sol ?? 500_000_000n,
       tokens: opts.tokens ?? 17_000_000_000_000n,
+      reserves: opts.reserves,
     }),
   ]);
+}
+
+/**
+ * Bonding curve Pump.fun simulée (produit constant x·y = k sur les réserves
+ * virtuelles) : produit des trades aux montants et réserves cohérents.
+ */
+export class SimulatedCurve {
+  private sol = 30_000_000_000n;
+  private token = 1_073_000_000_000_000n;
+  private readonly k = this.sol * this.token;
+
+  constructor(readonly mint: string) {}
+
+  buy(user: string, solLamports: bigint): string[] {
+    const before = this.token;
+    this.sol += solLamports;
+    this.token = this.k / this.sol;
+    return tradeTxLogs({ mint: this.mint, user, sol: solLamports, tokens: before - this.token, reserves: { sol: this.sol, token: this.token } });
+  }
+
+  sell(user: string, tokens: bigint): string[] {
+    const before = this.sol;
+    this.token += tokens;
+    this.sol = this.k / this.token;
+    return tradeTxLogs({ mint: this.mint, user, isBuy: false, sol: before - this.sol, tokens, reserves: { sol: this.sol, token: this.token } });
+  }
+
+  /** Tokens obtenus pour un achat de `solLamports` (sans l'exécuter). */
+  quote(solLamports: bigint): bigint {
+    return this.token - this.k / (this.sol + solLamports);
+  }
 }
 
 /** Signature aléatoire (64 octets en base58). */

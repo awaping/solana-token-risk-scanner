@@ -90,3 +90,23 @@ export const padEndVisible = (text: string, width: number): string =>
 
 export const padStartVisible = (text: string, width: number): string =>
   ' '.repeat(Math.max(0, width - visibleLength(text))) + text;
+
+/** Tronque une chaîne à `width` caractères visibles en préservant les séquences ANSI. */
+export function truncateVisible(text: string, width: number): string {
+  let visible = 0;
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\u001b') {
+      const end = text.indexOf('m', i);
+      if (end !== -1) {
+        out += text.slice(i, end + 1);
+        i = end;
+        continue;
+      }
+    }
+    if (visible >= width) continue;
+    out += text[i];
+    visible++;
+  }
+  return out;
+}

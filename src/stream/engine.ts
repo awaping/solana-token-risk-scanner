@@ -8,11 +8,16 @@
  *   T0      verdict immédiat à la création (aucune requête réseau)
  *   T1      verdict après la fenêtre de bundle (N premiers slots)
  *   T2      verdict après enrichissement RPC de l'historique du créateur
+ *   ACTIF   le token franchit le seuil d'activité (holders + trades)
  *   ALERTE  vente du dev pendant la période de suivi
+
+ * L'activité (holders exacts, trades, volume, capitalisation) est reconstruite
+ * en continu à partir des TradeEvent : aucun appel RPC n'est nécessaire.
  *
  * Tout le chemin critique (réception → verdict T0) est synchrone et en mémoire.
  */
 import { EventEmitter } from 'node:events';
+import bs58 from 'bs58';
 import { PUMP_FUN } from '../constants.js';
 import { bondingCurvePda } from '../analyzers/pumpfun.js';
 import { PublicKey } from '@solana/web3.js';
@@ -25,10 +30,11 @@ import {
   type FastVerdict,
   type TradeRecord,
 } from './fast-score.js';
+import { applyTrade, concentration, newActivity, type ActivityState, type Concentration } from './activity.js';
 import type { ReputationStore } from './reputation.js';
 import type { StreamTx } from './sources/types.js';
 
-export type Phase = 'T0' | 'T1' | 'T2' | 'ALERTE';
+export type Phase = 'T0' | 'T1' | 'T2' | 'ACTIF' | 'ALERTE';
 
 export interface TokenState {
   mint: string;
@@ -47,9 +53,14 @@ export interface TokenState {
   /** Retard de réception en slots par rapport au slot le plus récent vu. */
   lagSlots: number;
   devWallets: Set<string>;
+  /** Clés brutes (base64) des wallets du dev, calculées à la demande. */
+  devKeys?: Set<string>;
   /** Achats/ventes de la fenêtre de bundle. */
   trades: TradeRecord[];
-  tradeCount: number;
+  /** Activité reconstruite depuis tous les trades observés. */
+  activity: ActivityState;
+  /** Le seuil d'activité a été franchi (phase ACTIF émise). */
+  active: boolean;
   devBuyTokens: bigint;
   devSold: boolean;
   copycatOf?: string;
@@ -81,6 +92,10 @@ export interface EngineOptions {
   enrich?: (creator: string, mint: string) => Promise<NonNullable<CreatorSnapshot['enrichment']>>;
   /** Retrouve une création dont l'événement manque (logs tronqués). */
   resolveMissingCreate?: (signature: string) => Promise<{ mint: string; creator: string } | null>;
+  /** Seuil de la phase ACTIF (défaut : 10 holders et 15 trades). */
+  activity?: { minHolders: number; minTrades: number };
+  /** Un token jamais devenu actif est oublié après ce délai sans trade (s, défaut 300). */
+  inactiveTtlSeconds?: number;
   now?: () => number;
 }
 
@@ -128,6 +143,8 @@ export interface EngineStats {
   trackedTrades: number;
   truncatedCreates: number;
   tracked: number;
+  /** Tokens suivis ayant franchi le seuil d'activité. */
+  active: number;
   tipSlot: number;
   latency: { p50: number; p99: number; max: number; samples: number };
   wins: Record<string, number>;
@@ -141,8 +158,8 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
   private readonly tokensByKey = new Map<string, TokenState>();
   private readonly pendingT1 = new Set<TokenState>();
   private readonly t1Timers = new Map<string, NodeJS.Timeout>();
-  /** Achats reçus avant la création de leur token, indexés par clé brute du mint. */
-  private readonly orphans = new Map<string, { at: number; trades: TradeRecord[] }>();
+  /** Trades reçus avant la création de leur token, indexés par clé brute du mint. */
+  private readonly orphans = new Map<string, { at: number; items: Array<{ event: TradeEvent; tx: StreamTx }> }>();
   private readonly recentSymbols = new Map<string, { mint: string; at: number }>();
   private readonly enriching = new Set<string>();
   private readonly latencies = new Float64Array(LATENCY_SAMPLES);
@@ -151,10 +168,14 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
   private readonly now: () => number;
   private tipSlot = 0;
   private counters = { txReceived: 0, txDuplicates: 0, txFailed: 0, creates: 0, trackedTrades: 0, truncatedCreates: 0 };
+  private readonly minHolders: number;
+  private readonly minTrades: number;
 
   constructor(private readonly opts: EngineOptions) {
     super();
     this.now = opts.now ?? Date.now;
+    this.minHolders = opts.activity?.minHolders ?? 10;
+    this.minTrades = opts.activity?.minTrades ?? 15;
   }
 
   start(): void {
@@ -170,6 +191,27 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
 
   getToken(mint: string): TokenState | undefined {
     return this.tokens.get(mint);
+  }
+
+  /** Tokens actuellement suivis (pour le classement). */
+  trackedTokens(): TokenState[] {
+    return [...this.tokens.values()];
+  }
+
+  /** Recalcule le verdict d'un token sans émettre d'événement (tableau de bord). */
+  rescore(token: TokenState): FastVerdict {
+    token.verdict = this.score(token);
+    return token.verdict;
+  }
+
+  /** Concentration réelle d'un token (top 1 / top 10 / part du dev). */
+  concentrationOf(token: TokenState): Concentration {
+    return concentration(token.activity, token.supply, this.devKeys(token));
+  }
+
+  /** Clés brutes des wallets du dev (même format que les clés de soldes). */
+  private devKeys(token: TokenState): Set<string> {
+    return (token.devKeys ??= new Set([...token.devWallets].map((w) => Buffer.from(bs58.decode(w)).toString('base64'))));
   }
 
   // -------------------------------------------------------------------------
@@ -221,6 +263,7 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
       bundle: token.bundle,
       devSold: token.devSold,
       copycatOf: token.copycatOf,
+      concentration: token.activity.holders >= 5 ? concentration(token.activity, supply, this.devKeys(token)) : undefined,
     });
   }
 
@@ -270,7 +313,8 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
       lagSlots: Math.max(0, this.tipSlot - tx.slot),
       devWallets,
       trades: [],
-      tradeCount: 0,
+      activity: newActivity(),
+      active: false,
       devBuyTokens,
       devSold: false,
       copycatOf,
@@ -282,15 +326,14 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
     this.tokens.set(token.mint, token);
     this.tokensByKey.set(token.mintKey, token);
 
-    // Achats reçus avant la création (autre source plus rapide, ou logs tronqués).
+    this.emitVerdict('T0', token, tx.receivedAt);
+
+    // Trades reçus avant la création (autre source plus rapide, ou logs tronqués).
     const orphans = this.orphans.get(token.mintKey);
     if (orphans) {
-      token.trades.push(...orphans.trades);
-      token.tradeCount += orphans.trades.length;
       this.orphans.delete(token.mintKey);
+      for (const { event: orphan, tx: orphanTx } of orphans.items) this.onTrade(orphan, orphanTx);
     }
-
-    this.emitVerdict('T0', token, tx.receivedAt);
 
     this.pendingT1.add(token);
     const fallbackMs = (this.opts.bundleSlots + 1) * SLOT_MS + SLOT_MS;
@@ -303,46 +346,46 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
   private onTrade(event: TradeEvent, tx: StreamTx): void {
     const token = this.tokensByKey.get(event.mintKey);
     if (!token) {
-      // Token non suivi (cas le plus fréquent) : seuls les achats sont mis de côté
-      // quelques secondes au cas où leur création arriverait par une autre source.
-      if (event.isBuy) this.bufferOrphan(event.mintKey, event, tx);
+      // Token non suivi (cas le plus fréquent) : mis de côté quelques secondes au
+      // cas où sa création arriverait par une autre source, puis oublié.
+      this.bufferOrphan(event.mintKey, event, tx);
       return;
     }
-    const record: TradeRecord = {
-      signature: tx.signature,
-      slot: tx.slot,
-      user: event.user,
-      isBuy: event.isBuy,
-      solAmount: event.solAmount,
-      tokenAmount: event.tokenAmount,
-    };
     this.counters.trackedTrades++;
-    token.tradeCount++;
-    if (tx.slot < token.createSlot + this.opts.bundleSlots) token.trades.push(record);
+    applyTrade(token.activity, event, this.now());
 
-    if (!event.isBuy && token.devWallets.has(event.user) && !token.devSold) {
+    if (tx.slot < token.createSlot + this.opts.bundleSlots) {
+      token.trades.push({
+        signature: tx.signature,
+        slot: tx.slot,
+        user: event.user,
+        isBuy: event.isBuy,
+        solAmount: event.solAmount,
+        tokenAmount: event.tokenAmount,
+      });
+    }
+
+    if (!event.isBuy && !token.devSold && this.devKeys(token).has(event.userKey)) {
       token.devSold = true;
       this.emitVerdict('ALERTE', token, tx.receivedAt);
       // Enregistré après le verdict : cette vente pèsera sur les PROCHAINS tokens du créateur.
       this.opts.reputation.recordDevSell(token.creator);
     }
+
+    const a = token.activity;
+    if (!token.active && a.holders >= this.minHolders && a.trades >= this.minTrades) {
+      token.active = true;
+      this.emitVerdict('ACTIF', token, tx.receivedAt);
+    }
   }
 
   private bufferOrphan(mintKey: string, event: TradeEvent, tx: StreamTx): void {
-    // Enregistrement paresseux : `user` n'est encodé en base58 que si le token est un jour suivi.
-    const record = {
-      signature: tx.signature,
-      slot: tx.slot,
-      get user() {
-        return event.user;
-      },
-      isBuy: event.isBuy,
-      solAmount: event.solAmount,
-      tokenAmount: event.tokenAmount,
-    } satisfies TradeRecord;
     const entry = this.orphans.get(mintKey);
-    if (entry) entry.trades.push(record);
-    else this.orphans.set(mintKey, { at: this.now(), trades: [record] });
+    if (entry) {
+      if (entry.items.length < 200) entry.items.push({ event, tx });
+    } else {
+      this.orphans.set(mintKey, { at: this.now(), items: [{ event, tx }] });
+    }
   }
 
   private checkBundleWindows(): void {
@@ -409,8 +452,10 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
   private cleanup(): void {
     const now = this.now();
     const maxAge = this.opts.trackSeconds * 1_000;
+    const inactiveTtl = (this.opts.inactiveTtlSeconds ?? 300) * 1_000;
     for (const [mint, token] of this.tokens) {
-      if (now - token.detectedAtMs > maxAge) {
+      const lastActivity = Math.max(token.detectedAtMs, token.activity.lastTradeAt);
+      if (now - token.detectedAtMs > maxAge || (!token.active && now - lastActivity > inactiveTtl)) {
         this.tokens.delete(mint);
         this.tokensByKey.delete(token.mintKey);
         this.pendingT1.delete(token);
@@ -429,6 +474,7 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
     return {
       ...this.counters,
       tracked: this.tokens.size,
+      active: [...this.tokens.values()].filter((t) => t.active).length,
       tipSlot: this.tipSlot,
       latency: { p50: pick(0.5), p99: pick(0.99), max: n ? sorted[n - 1]! : 0, samples: this.latencyCount },
       wins: Object.fromEntries(this.race.wins),

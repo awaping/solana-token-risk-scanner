@@ -1,8 +1,10 @@
 /**
  * Commande `stream` : détection temps réel des lancements Pump.fun.
  *
- *   npm run stream
- *   npm run stream -- --ws wss://... --ws wss://... --grpc https://... --only vert
+ *   npm run stream                                   tableau de bord trié par activité
+ *   npm run stream -- --sort trades --only vert
+ *   npm run stream -- --all                          journal de chaque lancement (T0/T1/T2)
+ *   npm run stream -- --jsonl --phases actif,alerte  flux JSON pour un bot
  */
 import { parseArgs } from 'node:util';
 import { PublicKey } from '@solana/web3.js';
@@ -12,8 +14,20 @@ import { extractInitializedMints, scanCreatorHistory } from '../analyzers/creato
 import { createLimiter, RpcClient } from '../rpc/client.js';
 import { scanToken } from '../scanner.js';
 import type { Finding, RiskLevel } from '../types.js';
-import { c, colorForScore, fmtNum, fmtPct, padEndVisible, padStartVisible, setColorEnabled, shortAddr } from '../utils/format.js';
-import { StreamEngine, type EngineStats, type Phase, type VerdictEvent } from './engine.js';
+import {
+  c,
+  colorForScore,
+  fmtNum,
+  fmtPct,
+  padEndVisible,
+  padStartVisible,
+  setColorEnabled,
+  shortAddr,
+  truncateVisible,
+} from '../utils/format.js';
+import { marketMetrics, tradesLastMinute } from './activity.js';
+import { buildBoard, fmtAge, renderBoard, SORT_KEYS, SORT_LABELS, type SortKey } from './dashboard.js';
+import { StreamEngine, type EngineStats, type Phase, type TokenState, type VerdictEvent } from './engine.js';
 import { ReputationStore } from './reputation.js';
 import { GrpcSource } from './sources/grpc.js';
 import type { StatusHandler, TxSource } from './sources/types.js';
@@ -26,6 +40,17 @@ ${c.bold('Mode stream')} — détection temps réel des lancements Pump.fun
 ${c.bold('Usage')}
   npm run stream -- [options]
 
+Par défaut, un tableau de bord live classe les tokens ${c.bold('actifs')} (seuil de holders et de trades
+franchi) par activité, avec leur niveau de risque. Les lancements sans activité sont masqués.
+
+${c.bold('Classement')}
+  --sort <clé>          holders (défaut), trades, volume, momentum (trades/min), mcap
+  --min-holders <n>     Holders requis pour qu'un token soit ACTIF (défaut 10)
+  --min-trades <n>      Trades requis pour qu'un token soit ACTIF (défaut 15)
+  --top <n>             Lignes du classement (défaut 15)
+  --only <niveaux>      Ne garde que ces niveaux de risque, ex. "vert" ou "vert,orange"
+  --refresh <s>         Rafraîchissement du tableau (défaut 2 s ; 30 s si la sortie n'est pas un terminal)
+
 ${c.bold('Sources')} (toutes les sources configurées sont mises en course, la plus rapide gagne)
   --ws <url>            Endpoint WebSocket (répétable). Défaut : $SOLANA_WS_URL, sinon dérivé de $SOLANA_RPC_URL
   --grpc <url>          Endpoint Yellowstone gRPC (le plus rapide). Défaut : $YELLOWSTONE_GRPC_URL
@@ -34,17 +59,18 @@ ${c.bold('Sources')} (toutes les sources configurées sont mises en course, la p
 
 ${c.bold('Analyse')}
   --bundle-slots <n>    Slots observés avant le verdict T1 (défaut 2 : création + slot suivant)
-  --track <s>           Durée de suivi des ventes du dev (défaut 300 s)
+  --track <s>           Durée maximale de suivi d'un token (défaut 1800 s)
   --no-enrich           Pas d'enrichissement RPC de l'historique des créateurs
   --enrich-tx <n>       Transactions inspectées par créateur (défaut 25)
-  --deep-scan <s>       Scan complet des tokens non ROUGE, N secondes après leur lancement
+  --deep-scan           Scan complet (holders, réserve, créateur…) de chaque token qui devient ACTIF
   --cache <fichier>     Cache de réputation (défaut .cache/creators.json)
 
-${c.bold('Sortie')}
-  --only <niveaux>      N'affiche que ces niveaux, ex. "vert" ou "vert,orange"
-  --jsonl               Une ligne JSON par verdict sur stdout (pour un bot)
-  --webhook <url>       POST JSON de chaque verdict affiché (Telegram, Discord, bot de trading…)
-  --stats <s>           Statistiques de latence toutes les N secondes (défaut 30, 0 = jamais)
+${c.bold('Autres sorties')}
+  --all                 Journal de chaque lancement (T0, T1, T2, ACTIF, ALERTE) au lieu du tableau
+  --jsonl               Une ligne JSON par événement sur stdout (pour un bot)
+  --phases <liste>      Événements émis en --all / --jsonl / webhook : t0,t1,t2,actif,alerte (défaut : tous)
+  --webhook <url>       POST JSON des événements (tableau de bord : ACTIF et ALERTE)
+  --stats <s>           Statistiques de latence en --all / --jsonl (défaut 30, 0 = jamais)
   --no-warmup           Saute le préchauffage JIT au démarrage (déconseillé)
   --no-color            Désactive les couleurs
 `;
@@ -53,15 +79,20 @@ const PHASE_STYLE: Record<Phase, (t: string) => string> = {
   T0: (t) => c.bold(c.cyan(t)),
   T1: (t) => c.bold(c.blue(t)),
   T2: (t) => c.bold(c.magenta(t)),
+  ACTIF: (t) => c.bold(c.green(t)),
   ALERTE: (t) => c.bold(c.red(t)),
 };
-const PHASE_ICON: Record<Phase, string> = { T0: '⚡', T1: '◆', T2: '◇', ALERTE: '⚠' };
+const PHASE_ICON: Record<Phase, string> = { T0: '⚡', T1: '◆', T2: '◇', ACTIF: '★', ALERTE: '⚠' };
+const ALL_PHASES: readonly Phase[] = ['T0', 'T1', 'T2', 'ACTIF', 'ALERTE'];
 
-const clock = () => {
+const clock = (withMs = true) => {
   const d = new Date();
   const pad = (n: number, w = 2) => String(n).padStart(w, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+  const base = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return withMs ? `${base}.${pad(d.getMilliseconds(), 3)}` : base;
 };
+
+const jsonReplacer = (_key: string, value: unknown) => (typeof value === 'bigint' ? value.toString() : value);
 
 function parseLevels(value: string | undefined): Set<RiskLevel> | undefined {
   if (!value) return undefined;
@@ -75,6 +106,17 @@ function parseLevels(value: string | undefined): Set<RiskLevel> | undefined {
   return levels;
 }
 
+function parsePhases(value: string | undefined): Set<Phase> | undefined {
+  if (!value) return undefined;
+  const phases = new Set<Phase>();
+  for (const part of value.split(',')) {
+    const phase = part.trim().toUpperCase() as Phase;
+    if (!ALL_PHASES.includes(phase)) throw new Error(`--phases invalide : "${part}" (t0, t1, t2, actif, alerte)`);
+    phases.add(phase);
+  }
+  return phases;
+}
+
 function intOption(value: string | undefined, name: string, fallback: number, min = 0): number {
   if (value === undefined) return fallback;
   const n = Number.parseInt(value, 10);
@@ -82,8 +124,29 @@ function intOption(value: string | undefined, name: string, fallback: number, mi
   return n;
 }
 
-/** Objet JSON d'un verdict (sortie --jsonl et webhook). */
-export function verdictToJson(event: VerdictEvent) {
+/** Résumé d'activité d'un token (holders, trades, volume, capitalisation). */
+function activitySummary(token: TokenState, engine?: StreamEngine) {
+  const a = token.activity;
+  const market = marketMetrics(a, token.supply);
+  const conc = engine && a.holders > 0 ? engine.concentrationOf(token) : undefined;
+  return {
+    holders: a.holders,
+    trades: a.trades,
+    buys: a.buys,
+    sells: a.sells,
+    tradesLastMinute: tradesLastMinute(a, Date.now()),
+    volumeSol: market.volumeSol,
+    marketCapSol: market.marketCapSol,
+    progressPct: token.graduated ? 100 : market.progressPct,
+    top10Pct: conc?.top10Pct ?? null,
+    devHoldingPct: conc?.devPct ?? null,
+    devSold: token.devSold,
+    graduated: token.graduated,
+  };
+}
+
+/** Objet JSON d'un événement (sortie --jsonl et webhook). */
+export function verdictToJson(event: VerdictEvent, engine?: StreamEngine) {
   const { token, verdict } = event;
   return {
     ts: new Date().toISOString(),
@@ -96,12 +159,14 @@ export function verdictToJson(event: VerdictEvent) {
     level: verdict.level,
     previousScore: event.previousScore ?? null,
     decisionMicros: event.decisionMicros ?? null,
+    ageSeconds: Math.round((Date.now() - token.detectedAtMs) / 1000),
     slot: token.createSlot,
     lagSlots: token.lagSlots,
     source: token.source,
     signature: token.createSignature,
     devBuyPct: token.supply === 0n ? 0 : Number((token.devBuyTokens * 1_000_000n) / token.supply) / 10_000,
     bundle: token.bundle ?? null,
+    activity: activitySummary(token, engine),
     findings: verdict.findings.filter((f) => f.severity === 'critical' || f.severity === 'warning'),
   };
 }
@@ -129,8 +194,12 @@ function renderVerdict(event: VerdictEvent): string {
     detail = `bundle ${b.windowSlots} slot(s) : ${b.windowBuyers} acheteur${b.windowBuyers > 1 ? 's' : ''} · ${fmtPct(b.bundlePct)} supply · dev ${fmtPct(b.devPct)}${b.cloneGroupSize >= 3 ? c.red(` · ${b.cloneGroupSize} clones`) : ''}`;
   } else if (phase === 'T2') {
     detail = 'historique du créateur analysé';
+  } else if (phase === 'ACTIF') {
+    const a = token.activity;
+    const market = marketMetrics(a, token.supply);
+    detail = `${token.mint} · ${c.bold(`${fmtNum(a.holders)} holders`)} · ${fmtNum(a.trades)} trades · vol ${fmtNum(market.volumeSol, 1)} SOL · mcap ${fmtNum(market.marketCapSol, 0)} SOL · ${fmtAge(Date.now() - token.detectedAtMs)} après le lancement`;
   } else {
-    detail = c.red('le dev vend !');
+    detail = `${token.mint} · ${c.red('le dev vend !')} · ${fmtNum(token.activity.holders)} holders`;
   }
   return `${head} ${detail}`;
 }
@@ -146,15 +215,19 @@ function renderFindings(findings: Finding[], alreadyShown: Set<string>): string[
   return lines;
 }
 
-function renderStats(s: EngineStats, elapsedS: number, reputationSize: number): string {
-  const wins = Object.entries(s.wins)
+function sourcesSummary(s: EngineStats): string {
+  return Object.entries(s.wins)
     .sort((a, b) => b[1] - a[1])
-    .map(([src, n]) => `${src} ${fmtNum(n)}${s.lagMs[src] ? c.gray(` (+${fmtNum(s.lagMs[src]!, 1)} ms)`) : ''}`)
+    .map(([src, n]) => `${src} ${fmtNum(n)}${s.lagMs[src] ? ` (+${fmtNum(s.lagMs[src]!, 1)} ms)` : ''}`)
     .join(' · ');
+}
+
+function renderStats(s: EngineStats, elapsedS: number, reputationSize: number): string {
+  const wins = sourcesSummary(s);
   return c.gray(
     `⏱  ${fmtNum(s.txReceived)} tx (${fmtNum(s.txReceived / Math.max(1, elapsedS), 0)}/s) · ${fmtNum(s.creates)} lancements · ` +
       `décision T0 p50 ${fmtNum(s.latency.p50, 0)} µs / p99 ${fmtNum(s.latency.p99, 0)} µs · slot ${s.tipSlot} · ` +
-      `${fmtNum(s.tracked)} suivis · ${fmtNum(reputationSize)} créateurs en cache` +
+      `${fmtNum(s.tracked)} suivis (${fmtNum(s.active)} actifs) · ${fmtNum(reputationSize)} créateurs en cache` +
       (wins ? ` · sources : ${wins}` : ''),
   );
 }
@@ -168,14 +241,21 @@ export async function runStream(argv: string[]): Promise<number> {
       grpc: { type: 'string' },
       'grpc-token': { type: 'string' },
       rpc: { type: 'string' },
+      sort: { type: 'string' },
+      'min-holders': { type: 'string' },
+      'min-trades': { type: 'string' },
+      top: { type: 'string' },
+      refresh: { type: 'string' },
       'bundle-slots': { type: 'string' },
       track: { type: 'string' },
       'no-enrich': { type: 'boolean', default: false },
       'enrich-tx': { type: 'string' },
-      'deep-scan': { type: 'string' },
+      'deep-scan': { type: 'boolean', default: false },
       cache: { type: 'string' },
       only: { type: 'string' },
+      all: { type: 'boolean', default: false },
       jsonl: { type: 'boolean', default: false },
+      phases: { type: 'string' },
       webhook: { type: 'string' },
       stats: { type: 'string' },
       'no-warmup': { type: 'boolean', default: false },
@@ -198,13 +278,20 @@ export async function runStream(argv: string[]): Promise<number> {
 
   const config: ScannerConfig = configFromEnv();
   if (values.rpc) config.rpcUrl = values.rpc;
+  const sort = (values.sort ?? 'holders').toLowerCase() as SortKey;
+  if (!SORT_KEYS.includes(sort)) throw new Error(`--sort invalide : "${values.sort}" (${SORT_KEYS.join(', ')})`);
+  const minHolders = intOption(values['min-holders'], 'min-holders', 10, 1);
+  const minTrades = intOption(values['min-trades'], 'min-trades', 15, 1);
+  const top = intOption(values.top, 'top', 15, 1);
   const bundleSlots = intOption(values['bundle-slots'], 'bundle-slots', 2, 1);
-  const trackSeconds = intOption(values.track, 'track', 300, 10);
+  const trackSeconds = intOption(values.track, 'track', 1_800, 10);
   const enrichTx = intOption(values['enrich-tx'], 'enrich-tx', 25);
-  const deepScanS = intOption(values['deep-scan'], 'deep-scan', 0);
   const statsS = intOption(values.stats, 'stats', 30);
   const only = parseLevels(values.only);
-  const log = (line: string) => (values.jsonl ? process.stderr.write(`${line}\n`) : console.log(line));
+  const phases = parsePhases(values.phases);
+  const mode: 'dashboard' | 'journal' | 'jsonl' = values.jsonl ? 'jsonl' : values.all ? 'journal' : 'dashboard';
+  const live = mode === 'dashboard' && Boolean(process.stdout.isTTY);
+  const refreshS = intOption(values.refresh, 'refresh', live ? 2 : 30, 1);
 
   // --- Sources ---------------------------------------------------------------
   const programId = PUMP_FUN_PROGRAM_ID.toBase58();
@@ -230,6 +317,7 @@ export async function runStream(argv: string[]): Promise<number> {
     bundleSlots,
     trackSeconds,
     reputation,
+    activity: { minHolders, minTrades },
     enrich: values['no-enrich']
       ? undefined
       : async (creator, mint) => {
@@ -260,58 +348,85 @@ export async function runStream(argv: string[]): Promise<number> {
     },
   });
 
-  // --- Sorties ---------------------------------------------------------------
+  // --- Journal d'événements ---------------------------------------------------
+  const recentEvents: string[] = [];
+  const pushEvent = (line: string) => {
+    if (mode === 'dashboard' && !live) console.log(line);
+    recentEvents.unshift(line);
+    if (recentEvents.length > 30) recentEvents.pop();
+  };
+  const log = (line: string) => {
+    if (mode === 'dashboard') pushEvent(line);
+    else if (mode === 'jsonl') process.stderr.write(`${line}\n`);
+    else console.log(line);
+  };
+
+  // --- Événements du moteur ---------------------------------------------------
   const shownFindings = new Map<string, Set<string>>();
   const deepLimit = createLimiter(2);
-  const scheduled = new Set<string>();
+
+  /** L'événement est-il retenu pour la sortie courante ? */
+  const selected = (event: VerdictEvent): boolean => {
+    // Une vente du dev sur un token qui a des holders s'affiche quel que soit le filtre de risque.
+    const alertOnLiveToken = event.phase === 'ALERTE' && (event.token.active || event.token.activity.holders >= 3);
+    if (mode === 'dashboard') {
+      if (event.phase === 'ACTIF') return !only || only.has(event.verdict.level);
+      return alertOnLiveToken;
+    }
+    if (phases && !phases.has(event.phase)) return false;
+    return !only || only.has(event.verdict.level) || alertOnLiveToken;
+  };
 
   engine.on('verdict', (event) => {
-    if (only && !only.has(event.verdict.level)) return;
-    const json = verdictToJson(event);
-    if (values.jsonl) {
-      process.stdout.write(`${JSON.stringify(json, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))}\n`);
-    } else {
+    if (!selected(event)) return;
+    const json = verdictToJson(event, engine);
+
+    if (mode === 'jsonl') {
+      process.stdout.write(`${JSON.stringify(json, jsonReplacer)}\n`);
+    } else if (mode === 'journal') {
       const shown = shownFindings.get(event.token.mint) ?? new Set<string>();
       shownFindings.set(event.token.mint, shown);
       console.log([renderVerdict(event), ...renderFindings(event.verdict.findings, shown)].join('\n'));
+    } else {
+      pushEvent(renderVerdict(event));
     }
+
     if (values.webhook) {
       fetch(values.webhook, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(json, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
+        body: JSON.stringify(json, jsonReplacer),
         signal: AbortSignal.timeout(2_000),
       }).catch(() => undefined);
     }
 
-    if (deepScanS > 0 && event.phase === 'T0' && !scheduled.has(event.token.mint)) {
-      scheduled.add(event.token.mint);
-      const { mint, creator } = event.token;
-      setTimeout(() => {
-        const current = engine.getToken(mint)?.verdict;
-        if (current?.level === 'ROUGE') return;
-        void deepLimit(() =>
-          scanToken(mint, { ...config, creatorOverride: creator, creatorTxScanLimit: enrichTx }, { rpc })
-            .then((result) => {
-              const color = colorForScore(result.risk.score);
-              const alerts = result.risk.modules
-                .flatMap((m) => m.findings)
-                .filter((f) => f.severity === 'critical')
-                .map((f) => f.message)
-                .slice(0, 3);
-              log(
-                `${c.gray(clock())} ${c.bold('🔎 SCAN')}   ${color(c.bold(padEndVisible(result.risk.level, 6)))} ${color(padStartVisible(String(result.risk.score), 3))}  ${padEndVisible(c.bold(event.token.symbol), 12)} scan complet à +${deepScanS} s${alerts.length ? ` — ${alerts.join(' · ')}` : ''}`,
-              );
-            })
-            .catch((error: unknown) => log(c.yellow(`scan complet de ${shortAddr(mint)} impossible : ${error instanceof Error ? error.message : String(error)}`))),
-        );
-      }, deepScanS * 1_000).unref();
+    if (values['deep-scan'] && event.phase === 'ACTIF' && event.verdict.level !== 'ROUGE') {
+      const { mint, creator, symbol } = event.token;
+      void deepLimit(() =>
+        scanToken(mint, { ...config, creatorOverride: creator, creatorTxScanLimit: enrichTx }, { rpc })
+          .then((result) => {
+            const color = colorForScore(result.risk.score);
+            const alerts = result.risk.modules
+              .flatMap((m) => m.findings)
+              .filter((f) => f.severity === 'critical')
+              .map((f) => f.message)
+              .slice(0, 3);
+            log(
+              `${c.gray(clock())} ${c.bold(padEndVisible('◎ SCAN', 8))} ${color(c.bold(padEndVisible(result.risk.level, 6)))} ${color(padStartVisible(String(result.risk.score), 3))}  ${padEndVisible(c.bold(symbol.slice(0, 12)), 12)} scan complet${alerts.length ? ` — ${alerts.join(' · ')}` : ' — aucun indicateur critique'}`,
+            );
+          })
+          .catch((error: unknown) =>
+            log(c.yellow(`scan complet de ${shortAddr(mint)} impossible : ${error instanceof Error ? error.message : String(error)}`)),
+          ),
+      );
     }
   });
 
+  let dashboardStarted = false;
   const onStatus: StatusHandler = (source, message, level) => {
     const line = `${c.gray(clock())} ${level === 'warn' ? c.yellow('!') : c.green('●')} ${c.gray(`[${source}]`)} ${message}`;
-    process.stderr.write(`${line}\n`);
+    if (live && dashboardStarted) pushEvent(line);
+    else process.stderr.write(`${line}\n`);
   };
   engine.on('status', (message, level) => onStatus('moteur', message, level));
 
@@ -320,7 +435,7 @@ export async function runStream(argv: string[]): Promise<number> {
     `${c.bold('Solana Token Risk Scanner — mode stream')}\n` +
       c.gray(
         `  sources : ${sources.map((s) => s.name).join(', ')}\n` +
-          `  RPC enrichissement : ${values['no-enrich'] ? 'désactivé' : maskRpcUrl(config.rpcUrl)} · fenêtre bundle ${bundleSlots} slot(s) · suivi ${trackSeconds} s · ${loaded} créateurs en cache\n`,
+          `  RPC enrichissement : ${values['no-enrich'] ? 'désactivé' : maskRpcUrl(config.rpcUrl)} · seuil ACTIF ${minHolders} holders / ${minTrades} trades · fenêtre bundle ${bundleSlots} slot(s) · ${loaded} créateurs en cache\n`,
       ),
   );
 
@@ -329,7 +444,7 @@ export async function runStream(argv: string[]): Promise<number> {
     const warm = warmUpHotPath(20_000, (event) => {
       renderVerdict(event);
       renderFindings(event.verdict.findings, new Set());
-      JSON.stringify(verdictToJson(event), (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+      JSON.stringify(verdictToJson(event), jsonReplacer);
     });
     process.stderr.write(c.gray(`  préchauffage JIT : ${fmtNum(warm.iterations)} tx synthétiques en ${fmtNum(warm.ms, 0)} ms\n`));
   }
@@ -347,7 +462,69 @@ export async function runStream(argv: string[]): Promise<number> {
   }
   if (running === 0) throw new Error('aucune source de données n’a pu démarrer');
 
-  const statsTimer = statsS > 0 ? setInterval(() => log(renderStats(engine.stats(), (Date.now() - started) / 1000, reputation.size)), statsS * 1_000) : undefined;
+  // --- Tableau de bord ---------------------------------------------------------
+  const boardBlock = (maxRows: number): string[] => {
+    const rows = buildBoard(engine, { sort, limit: maxRows, only, now: Date.now() });
+    const title =
+      c.bold(`CLASSEMENT PAR ${SORT_LABELS[sort].toUpperCase()}`) +
+      c.gray(
+        ` — tokens actifs (≥ ${minHolders} holders et ≥ ${minTrades} trades)${only ? ` · risque : ${[...only].join(', ')}` : ''} · lancements sans activité masqués`,
+      );
+    return [
+      title,
+      ...(rows.length > 0
+        ? renderBoard(rows, sort)
+        : [c.gray('  Aucun token actif pour le moment : un lancement apparaît ici dès qu’il franchit le seuil.')]),
+    ];
+  };
+
+  let lastTx = 0;
+  let lastTick = Date.now();
+  const renderFrame = (): string[] => {
+    const now = Date.now();
+    const st = engine.stats();
+    const txRate = (st.txReceived - lastTx) / Math.max(0.001, (now - lastTick) / 1000);
+    lastTx = st.txReceived;
+    lastTick = now;
+    const height = process.stdout.rows ?? 40;
+    const eventsShown = Math.min(8, Math.max(3, Math.floor(height / 5)));
+    const boardRows = Math.max(3, Math.min(top, height - eventsShown - 9));
+    const sourcesText = sourcesSummary(st);
+    return [
+      `${c.bold('Solana Token Risk Scanner — stream')}  ${c.gray(`${clock(false)} · en ligne depuis ${fmtAge(now - started)} · Ctrl+C pour quitter`)}`,
+      c.gray(`${fmtNum(txRate, 0)} tx/s · ${fmtNum(st.creates)} lancements · `) +
+        c.bold(`${fmtNum(st.active)} actifs`) +
+        c.gray(
+          ` · décision T0 p50 ${fmtNum(st.latency.p50, 0)} µs / p99 ${fmtNum(st.latency.p99, 0)} µs · slot ${st.tipSlot}${sourcesText ? ` · ${sourcesText}` : ''}`,
+        ),
+      '',
+      ...boardBlock(boardRows),
+      '',
+      c.bold('DERNIERS ÉVÉNEMENTS'),
+      ...(recentEvents.length > 0 ? recentEvents.slice(0, eventsShown) : [c.gray('  (aucun pour le moment)')]),
+    ];
+  };
+
+  const draw = () => {
+    const width = Math.max(40, (process.stdout.columns ?? 200) - 1);
+    const frame = renderFrame().map((line) => `${truncateVisible(line, width)}\x1b[K`);
+    process.stdout.write(`\x1b[H${frame.join('\n')}\x1b[J`);
+  };
+
+  let refreshTimer: NodeJS.Timeout | undefined;
+  if (live) {
+    process.stdout.write('\x1b[?25l\x1b[2J');
+    dashboardStarted = true;
+    draw();
+    refreshTimer = setInterval(draw, refreshS * 1_000);
+  } else if (mode === 'dashboard') {
+    refreshTimer = setInterval(() => console.log(['', ...boardBlock(top), ''].join('\n')), refreshS * 1_000);
+  }
+
+  const statsTimer =
+    mode !== 'dashboard' && statsS > 0
+      ? setInterval(() => log(renderStats(engine.stats(), (Date.now() - started) / 1000, reputation.size)), statsS * 1_000)
+      : undefined;
   const saveTimer = setInterval(() => {
     try {
       reputation.save();
@@ -358,6 +535,7 @@ export async function runStream(argv: string[]): Promise<number> {
 
   return new Promise<number>((resolve) => {
     const shutdown = async () => {
+      clearInterval(refreshTimer);
       clearInterval(statsTimer);
       clearInterval(saveTimer);
       engine.stop();
@@ -367,7 +545,11 @@ export async function runStream(argv: string[]): Promise<number> {
       } catch {
         // ignoré à l'arrêt
       }
-      log(renderStats(engine.stats(), (Date.now() - started) / 1000, reputation.size));
+      if (live) process.stdout.write('\x1b[?25h\x1b[2J\x1b[H');
+      if (mode === 'dashboard') console.log(['', ...boardBlock(top), ''].join('\n'));
+      const summary = renderStats(engine.stats(), (Date.now() - started) / 1000, reputation.size);
+      if (mode === 'jsonl') process.stderr.write(`${summary}\n`);
+      else console.log(summary);
       resolve(0);
     };
     process.once('SIGINT', shutdown);

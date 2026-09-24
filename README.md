@@ -15,7 +15,7 @@ Deux modes complémentaires :
 | Mode | Commande | Usage | Délai |
 |---|---|---|---|
 | **Scan** | `npm run scan -- <MINT>` | Audit complet d'un token donné : 6 modules on-chain | quelques secondes |
-| **Stream** | `npm run stream` | Surveille **tous** les lancements Pump.fun en direct : verdict à la création, puis après la fenêtre de bundle | ~20–300 µs de calcul après réception |
+| **Stream** | `npm run stream` | Surveille **tous** les lancements Pump.fun en direct et affiche un **classement live des tokens actifs** (holders, trades, volume) avec leur niveau de risque | ~20–300 µs de calcul après réception |
 
 ---
 
@@ -181,16 +181,50 @@ Extrait de `npm run demo` (scénario simulé) :
 
 ## Mode stream (temps réel)
 
-Le mode stream écoute **en continu** toutes les transactions du programme Pump.fun et rend un verdict sur chaque nouveau token **au moment même où sa création est reçue**. Aucune requête RPC n'est faite sur le chemin critique.
+Le mode stream écoute **en continu** toutes les transactions du programme Pump.fun. Il rend un verdict sur chaque nouveau token **au moment même où sa création est reçue**, puis suit son **activité réelle** : holders, trades, volume, capitalisation. Aucune requête RPC n'est faite sur le chemin critique.
+
+La plupart des lancements Pump.fun n'ont jamais d'acheteur : un verdict VERT signifie seulement « aucune manipulation détectée ». Le tableau de bord n'affiche donc que les tokens **ACTIFS**, qui ont franchi un seuil de holders **et** de trades, triés par activité.
 
 ```bash
-npm run stream                                  # WebSocket dérivé de SOLANA_RPC_URL
-npm run stream -- --only vert                   # n'affiche que les lancements propres
-npm run stream -- --jsonl > lancements.jsonl    # une ligne JSON par verdict (pour un bot)
+npm run stream                                  # tableau de bord live, trié par holders
+npm run stream -- --sort trades --only vert     # tri par nombre de trades, risque VERT uniquement
+npm run stream -- --min-holders 25 --min-trades 50
+npm run stream -- --all                         # journal de chaque lancement (T0, T1, T2…)
+npm run stream -- --jsonl --phases actif,alerte > actifs.jsonl   # flux JSON pour un bot
 npm run stream -- --webhook https://mon-bot/hook
 npm run demo:stream                             # démo hors-ligne (faux nœud WebSocket)
 npm run bench                                   # mesure de la latence du chemin critique
 ```
+
+### Tableau de bord
+
+```text
+Solana Token Risk Scanner — stream  22:58:03 · en ligne depuis 4m12s · Ctrl+C pour quitter
+412 tx/s · 1 187 lancements · 9 actifs · décision T0 p50 25 µs / p99 205 µs · slot 330000026 · ws:mainnet.helius-rpc.com 48 211
+
+CLASSEMENT PAR HOLDERS — tokens actifs (≥ 10 holders et ≥ 15 trades) · lancements sans activité masqués
+ #  Symbole     Âge  Holders  Trades       A/V  1 min  Vol SOL  MCap SOL  Courbe  Top10     Dev  Risque      Mint
+ 1  MOON         4s       21      23      22/1     23     35,2      64,2    46 %   27 %   vendu  ROUGE  100  FbPLZ9KtDKQkapqaWRtXnbqQBykZpvnFEzKFtsX1ABJF
+ 2  HFROG        4s       20      32      26/6     32     14,9      47,3    31 %   18 %   1,8 %  VERT     0  DS6RXEnn7oAXtTXGXVDT3xNJ9fQxTq3Z5zwkzWwAoaqA
+ 3  WHALE        4s       16      16      16/0     16     19,4      75,7    53 %   42 %   0,0 %  ROUGE   70  HfK7zVcCs1ZTD1fWK1kKTBfmNbaWdq3YT7NZizK6ysTZ
+
+DERNIERS ÉVÉNEMENTS
+22:58:02.046 ⚠ ALERTE ROUGE  100  MOON   FbPLZ9KtDKQkapqaWRtXnbqQBykZpvnFEzKFtsX1ABJF · le dev vend ! · 21 holders
+22:58:00.512 ★ ACTIF  ROUGE   70  WHALE  HfK7zVcCs1ZTD1fWK1kKTBfmNbaWdq3YT7NZizK6ysTZ · 16 holders · 16 trades · vol 19,4 SOL · mcap 76 SOL
+22:57:59.870 ★ ACTIF  VERT     0  HFROG  DS6RXEnn7oAXtTXGXVDT3xNJ9fQxTq3Z5zwkzWwAoaqA · 10 holders · 15 trades · vol 6,2 SOL · mcap 35 SOL
+```
+
+| Colonne | Signification |
+|---|---|
+| Holders | Wallets détenant un solde > 0, **exact** : reconstruit à partir de chaque achat et vente depuis le premier bloc |
+| Trades · A/V | Nombre total de trades, dont achats / ventes |
+| 1 min | Trades sur la dernière minute (momentum) |
+| Vol. SOL · MCap SOL | Volume échangé ; capitalisation au prix spot de la bonding curve |
+| Courbe | Progression vers la graduation (`migré` une fois la pool créée) |
+| Top10 · Dev | Part de la supply détenue par les 10 plus gros wallets ; part encore détenue par le dev (`vendu` s'il a vendu) |
+| Risque | Score rapide recalculé en continu, **concentration réelle comprise** |
+
+Le tableau se redessine toutes les 2 s dans un terminal. Si la sortie est redirigée vers un fichier, les événements s'écrivent au fil de l'eau et le classement toutes les 30 s.
 
 ### Comment un lancement est analysé
 
@@ -206,6 +240,8 @@ npm run bench                                   # mesure de la latence du chemin
       │                      identiques (wallets clonés), part de supply raflée ─▶ ~0,8 s après
       ├─ T2  enrichissement   historique RPC du créateur (tokens déjà déployés, âge du wallet),
       │                      en arrière-plan ─────────────────────────────▶ quelques secondes
+      ├─ activité            chaque trade met à jour holders, volume, capitalisation, concentration
+      ├─ ACTIF               seuil de holders ET de trades franchi ─▶ le token entre au classement
       └─ ALERTE              le dev vend pendant la période de suivi ─────▶ immédiat
 ```
 
@@ -219,6 +255,8 @@ npm run bench                                   # mesure de la latence du chemin
 | T1 | Supply raflée par ces acheteurs : 10 / 25 / 40 % | +15 / +30 / +45 (plancher 75 si dev + bundle ≥ 40 %) |
 | T1 | ≥ 3 achats de montant SOL identique (±0,1 %) | +40, **plancher 80** (wallets clonés) |
 | T2 | Tokens déjà créés (historique RPC), wallet jetable, wallet < 48 h | voir le scan complet |
+| Activité | Top 10 holders ≥ 30 / 50 % de la supply | +15 / +30 (plancher 75 à partir de 70 %) |
+| Activité | Un wallet (hors dev) ≥ 10 / 20 % | +10 / +25 (plancher 70 à partir de 30 %) |
 | ALERTE | Le dev vend | +40, **plancher 70** |
 
 ### Pourquoi c'est rapide
@@ -245,25 +283,28 @@ Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transacti
 
 | Option | Description |
 |---|---|
+| `--sort <clé>` | Tri du classement : `holders` (défaut), `trades`, `volume`, `momentum` (trades / min), `mcap` |
+| `--min-holders <n>` / `--min-trades <n>` | Seuil pour qu'un token devienne ACTIF (défaut 10 holders et 15 trades) |
+| `--top <n>` | Lignes du classement (défaut 15) |
+| `--only <niveaux>` | Ne garde que ces niveaux de risque : `vert`, `orange`, `rouge` ou une combinaison (`vert,orange`) |
+| `--refresh <s>` | Rafraîchissement du tableau (défaut 2 s, ou 30 s si la sortie n'est pas un terminal) |
 | `--ws <url>` | Endpoint WebSocket, répétable (défaut : `$SOLANA_WS_URL`, sinon dérivé de `$SOLANA_RPC_URL`) |
 | `--grpc <url>` / `--grpc-token <jeton>` | Source Yellowstone gRPC (défaut : `$YELLOWSTONE_GRPC_URL` / `$YELLOWSTONE_GRPC_TOKEN`) |
 | `--bundle-slots <n>` | Slots observés avant le verdict T1 (défaut 2 : création + slot suivant) |
-| `--track <s>` | Durée de suivi des ventes du dev (défaut 300 s) |
+| `--track <s>` | Durée maximale de suivi d'un token (défaut 1800 s). Un lancement jamais actif est oublié après 5 min sans trade |
 | `--no-enrich` / `--enrich-tx <n>` | Désactive / dimensionne l'enrichissement RPC des créateurs (défaut 25 tx) |
-| `--deep-scan <s>` | Lance le scan complet des tokens non ROUGE N secondes après leur création |
-| `--only <niveaux>` | Filtre l'affichage : `vert`, `orange`, `rouge` ou une combinaison (`vert,orange`) |
-| `--jsonl` | Une ligne JSON par verdict sur stdout ; les messages d'état vont sur stderr |
-| `--webhook <url>` | POST JSON de chaque verdict affiché (bot Telegram / Discord / trading) |
+| `--deep-scan` | Lance le scan complet (holders, réserve, créateur…) de chaque token qui devient ACTIF (hors ROUGE) |
+| `--all` | Journal de chaque lancement (T0, T1, T2, ACTIF, ALERTE) au lieu du tableau de bord |
+| `--jsonl` | Une ligne JSON par événement sur stdout, avec l'objet `activity` (holders, trades, volume, mcap, top10…) |
+| `--phases <liste>` | Événements émis en `--all` / `--jsonl` / webhook : `t0,t1,t2,actif,alerte` |
+| `--webhook <url>` | POST JSON des événements (en tableau de bord : ACTIF et ALERTE) pour un bot Telegram / Discord / trading |
 | `--cache <fichier>` | Cache de réputation (défaut `.cache/creators.json`) |
-| `--stats <s>` | Statistiques de débit, latence et course des sources (défaut 30 s) |
+| `--stats <s>` | Statistiques de débit, latence et course des sources en `--all` / `--jsonl` (défaut 30 s) |
 | `--no-warmup` | Saute le préchauffage JIT |
 
-### Exemple (`npm run demo:stream`)
+### Journal complet (`npm run stream -- --all`)
 
 ```text
-  préchauffage JIT : 20 000 tx synthétiques en 970 ms
-⚡ T0     VERT     0  HFROG   Honest Frog · DUs9…txAN · dev 8YXd…qXdp · slot 330000000 +0 slot · décision 240 µs
-◆ T1     VERT     0  HFROG   bundle 2 slot(s) : 1 acheteur · 0,80 % supply · dev 1,50 %
 ⚡ T0     VERT    25  MOON    Moon Rocket · BYmF…q8qZ · dev 6zNV…ePwb · slot 330000003 +0 slot · décision 304 µs
                       ▲ Achat initial du dev : 12,00 % de la supply
 ◆ T1     ROUGE  100 (+75)  MOON   bundle 2 slot(s) : 7 acheteurs · 28,00 % supply · dev 12,00 % · 7 clones
@@ -349,7 +390,9 @@ src/
 ├── report/console.ts     # Rendu terminal + JSON
 ├── stream/               # Mode temps réel
 │   ├── cli.ts            # Commande stream : sources, sorties (console, JSONL, webhook), stats
-│   ├── engine.ts         # Moteur : course multi-sources, suivi des lancements, T0 / T1 / T2 / alertes
+│   ├── engine.ts         # Moteur : course multi-sources, suivi des lancements, T0 / T1 / T2 / ACTIF / alertes
+│   ├── activity.ts       # Holders exacts, trades, volume, momentum, capitalisation, concentration
+│   ├── dashboard.ts      # Classement des tokens actifs (tri par holders, trades, volume…)
 │   ├── events.ts         # Décodage des événements Anchor Pump.fun depuis les logs
 │   ├── fast-score.ts     # Score rapide (fonction pure) + statistiques de bundle
 │   ├── reputation.ts     # Cache de réputation des créateurs (persisté)

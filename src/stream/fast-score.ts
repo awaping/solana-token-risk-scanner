@@ -5,12 +5,14 @@
  *   T0  création       réputation du créateur (cache local), achat initial du dev, copie de symbole
  *   T1  fenêtre bundle acheteurs du/des premier(s) slot(s) : snipers, bundle Jito, montants clonés
  *   T2  enrichissement historique RPC du créateur (asynchrone, arrive en quelques secondes)
+ *   +   activité       concentration réelle des holders (soldes reconstruits depuis les trades)
  *   +   alertes        vente du dev pendant la période de suivi
  *
  * Niveaux identiques au scan complet : VERT 0-30 · ORANGE 31-69 · ROUGE 70-100.
  */
 import { levelFor } from '../scoring/engine.js';
 import type { Finding, RiskLevel, ScoreFloor } from '../types.js';
+import type { Concentration } from './activity.js';
 import { fmtNum, fmtPct, fmtSol, shortAddr } from '../utils/format.js';
 import { clamp, lamportsToSol, piecewise } from '../utils/math.js';
 
@@ -65,6 +67,8 @@ export interface FastSnapshot {
   devSold: boolean;
   /** Mint d'un token récent portant le même symbole. */
   copycatOf?: string;
+  /** Concentration réelle des holders (à partir de 5 holders). */
+  concentration?: Concentration;
 }
 
 export interface FastVerdict {
@@ -191,10 +195,12 @@ export function computeFastScore(s: FastSnapshot): FastVerdict {
   // --- Bundle / snipers -----------------------------------------------------
   const b = s.bundle;
   if (b) {
-    const window = b.windowSlots > 1 ? `${b.windowSlots} premiers slots` : 'slot de création';
+
     points += piecewise(b.sameSlotBuyers, [[2, 0], [3, 15], [6, 30], [10, 45]]);
     points += piecewise(b.bundlePct, [[5, 0], [10, 15], [25, 30], [40, 45]]);
-    const message = `${b.sameSlotBuyers} acheteur${b.sameSlotBuyers > 1 ? 's' : ''} dans le slot de création, ${b.windowBuyers} sur ${b.windowSlots > 1 ? 'les' : 'le'} ${window} → ${fmtPct(b.bundlePct)} de la supply`;
+    const buyers = `${b.sameSlotBuyers} acheteur${b.sameSlotBuyers > 1 ? 's' : ''} dans le slot de création`;
+    const wider = b.windowSlots > 1 ? `, ${b.windowBuyers} sur les ${b.windowSlots} premiers slots` : '';
+    const message = `${buyers}${wider} → ${fmtPct(b.bundlePct)} de la supply`;
     if (b.bundlePct >= 25 || b.sameSlotBuyers >= 6) findings.push({ severity: 'critical', message: `Bundle au lancement : ${message}` });
     else if (b.bundlePct >= 10 || b.sameSlotBuyers >= 3) findings.push({ severity: 'warning', message: `Snipers : ${message}` });
     else findings.push({ severity: 'ok', message: `Lancement propre : ${message}` });
@@ -209,6 +215,31 @@ export function computeFastScore(s: FastSnapshot): FastVerdict {
     }
     if (b.bundlePct + b.devPct >= 40) {
       floors.push({ floor: 75, reason: `Dev + bundle = ${fmtPct(b.bundlePct + b.devPct)} de la supply raflée au lancement` });
+    }
+  }
+
+  // --- Concentration réelle (soldes reconstruits depuis les trades) ----------
+  const conc = s.concentration;
+  if (conc && conc.holders >= 5) {
+    const top10 = `Top 10 holders : ${fmtPct(conc.top10Pct)} de la supply (${conc.holders} holders)`;
+    if (conc.top10Pct >= 50) {
+      points += 30;
+      findings.push({ severity: 'critical', message: top10 });
+      if (conc.top10Pct >= 70) floors.push({ floor: 75, reason: `Supply monopolisée (top 10 = ${fmtPct(conc.top10Pct)})` });
+    } else if (conc.top10Pct >= 30) {
+      points += 15;
+      findings.push({ severity: 'warning', message: top10 });
+    } else {
+      findings.push({ severity: 'ok', message: top10 });
+    }
+    // Le dev est déjà évalué via son achat : seul un autre wallet dominant est pénalisé ici.
+    if (!conc.top1IsDev && conc.top1Pct >= 10) {
+      points += conc.top1Pct >= 20 ? 25 : 10;
+      findings.push({
+        severity: conc.top1Pct >= 20 ? 'critical' : 'warning',
+        message: `Un wallet détient ${fmtPct(conc.top1Pct)} de la supply`,
+      });
+      if (conc.top1Pct >= 30) floors.push({ floor: 70, reason: `Baleine à ${fmtPct(conc.top1Pct)}` });
     }
   }
 
