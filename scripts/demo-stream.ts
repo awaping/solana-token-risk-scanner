@@ -5,6 +5,7 @@
  *
  *   npm run demo:stream
  *   npm run demo:stream -- --all      (journal complet de chaque lancement)
+ *   npm run demo:stream -- robinhood  (démo EVM : Robinhood Chain, Base, BSC…)
  */
 import '../src/utils/quiet-warnings.js';
 import { mkdtempSync } from 'node:fs';
@@ -13,6 +14,15 @@ import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { runStream } from '../src/stream/cli.js';
 import { createTxLogs, key, signature, SimulatedCurve } from '../src/stream/synthetic.js';
+import { findChain } from '../src/chains/registry.js';
+import { runEvmDemo } from './demo-stream-evm.js';
+
+// `npm run demo:stream -- robinhood` : démo EVM sur la chaîne demandée.
+const requested = process.argv[2] && !process.argv[2].startsWith('--') ? findChain(process.argv[2]) : null;
+if (requested?.kind === 'evm') {
+  await runEvmDemo(requested, process.argv.slice(3));
+  process.exit(0);
+}
 
 const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
 await new Promise<void>((resolve) => server.once('listening', () => resolve()));
@@ -67,7 +77,8 @@ const launch = (mint: string, creator: string, name: string, symbol: string, dev
 
 const { port } = server.address() as { port: number };
 const cache = join(mkdtempSync(join(tmpdir(), 'sol-risk-demo-')), 'creators.json');
-const run = runStream(['--ws', `ws://127.0.0.1:${port}`, '--no-enrich', '--refresh', '1', '--cache', cache, ...process.argv.slice(2)]);
+const extra = process.argv.slice(2).filter((a) => a !== 'solana' && a !== 'sol');
+const run = runStream(['solana', '--ws', `ws://127.0.0.1:${port}`, '--no-enrich', '--refresh', '1', '--cache', cache, ...extra]);
 await subscribed;
 await sleep(300);
 

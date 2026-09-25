@@ -98,14 +98,15 @@ test('classement : seuls les tokens actifs, triés par la clé demandée', () =>
   make('MANYTRADE', 6, 200_000_000n, 60); // 66 trades, 7,2 SOL
   make('DEAD', 1, 200_000_000n, 0); // 1 trade : jamais actif
   const byTrades = buildBoard(engine, { sort: 'trades', limit: 10, now: Date.now() });
-  assert.deepEqual(byTrades.map((r) => r.token.symbol), ['MANYTRADE', 'BIGVOL']);
+  assert.deepEqual(byTrades.map((r) => r.symbol), ['MANYTRADE', 'BIGVOL']);
   const byVolume = buildBoard(engine, { sort: 'volume', limit: 10, now: Date.now() });
-  assert.deepEqual(byVolume.map((r) => r.token.symbol), ['BIGVOL', 'MANYTRADE']);
+  assert.deepEqual(byVolume.map((r) => r.symbol), ['BIGVOL', 'MANYTRADE']);
   const onlyRed = buildBoard(engine, { sort: 'trades', limit: 10, only: new Set(['ROUGE']), now: Date.now() });
   assert.equal(onlyRed.length, 0);
   const lines = renderBoard(byTrades, 'trades');
   assert.equal(lines.length, 3);
   assert.match(lines[1]!, /MANYTRADE/);
+  assert.match(lines[0]!, /Holders/); // indicatif, toujours affiché sur Solana
 });
 
 test('concentration réelle : une baleine non-dev fait monter le risque', () => {
@@ -115,7 +116,7 @@ test('concentration réelle : une baleine non-dev fait monter le risque', () => 
   send(tradeTxLogs({ mint, user: key(), sol: 20_000_000_000n, tokens: 350_000_000_000_000n })); // 35 %
   for (let i = 0; i < 6; i++) send(tradeTxLogs({ mint, user: key(), sol: 100_000_000n, tokens: 2_000_000_000_000n }));
   const row = buildBoard(engine, { sort: 'trades', limit: 5, now: Date.now() })[0]!;
-  assert.ok(row.top10Pct > 35);
+  assert.ok((row.top10Pct ?? 0) > 35);
   assert.equal(row.verdict.level, 'ROUGE');
   assert.ok(row.verdict.findings.some((f) => f.message.includes('Un wallet détient')));
 });

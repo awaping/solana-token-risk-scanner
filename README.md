@@ -15,7 +15,18 @@ Deux modes complémentaires :
 | Mode | Commande | Usage | Délai |
 |---|---|---|---|
 | **Scan** | `npm run scan -- <MINT>` | Audit complet d'un token donné : 6 modules on-chain | quelques secondes |
-| **Stream** | `npm run stream` | Surveille **tous** les lancements Pump.fun en direct et affiche un **classement live des tokens actifs** (holders, trades, volume) avec leur niveau de risque | ~20–300 µs de calcul après réception |
+| **Stream** | `npm run stream [blockchain]` | Surveille **tous** les nouveaux lancements en direct et affiche un **classement live des tokens actifs** (trades, volume, momentum) avec leur niveau de risque | Solana : ~20–300 µs de calcul après réception |
+
+Le mode stream fonctionne sur **19 blockchains**, soit tous les réseaux actifs sur Based Bot : **Solana** (Pump.fun) et **18 chaînes EVM** (Ethereum, Base, BNB Chain, Robinhood Chain, Arbitrum, Monad…). Il suffit de nommer la chaîne :
+
+```bash
+npm run stream              # Solana (défaut)
+npm run stream robinhood    # Robinhood Chain
+npm run stream base         # Base
+npm run stream -- --chains  # liste complète
+```
+
+Le scan ponctuel reste propre à Solana.
 
 ---
 
@@ -26,6 +37,7 @@ Deux modes complémentaires :
 - [Utilisation](#utilisation)
 - [Exemple de rapport](#exemple-de-rapport)
 - [Mode stream (temps réel)](#mode-stream-temps-réel)
+- [Mode stream sur les blockchains EVM](#mode-stream-sur-les-blockchains-evm)
 - [Moteur de scoring](#moteur-de-scoring)
 - [Architecture](#architecture)
 - [Choisir un endpoint RPC](#choisir-un-endpoint-rpc)
@@ -61,9 +73,9 @@ npm install
 cp .env.example .env        # puis renseigner SOLANA_RPC_URL
 ```
 
-Dépendances d'exécution : `@solana/web3.js`, `@solana/spl-token` et `bignumber.js`, plus `ws` et `bs58` pour le mode stream. Les couleurs ANSI, les arguments CLI et le chargement du `.env` passent par Node.js natif.
+Dépendances d'exécution : `@solana/web3.js`, `@solana/spl-token` et `bignumber.js`, plus `ws` et `bs58` pour le mode stream et `viem` pour les blockchains EVM. Les couleurs ANSI, les arguments CLI et le chargement du `.env` passent par Node.js natif.
 
-> **Deux commandes, deux usages** : `npm run scan -- <MINT>` analyse **un** token donné ; `npm run stream` (sans adresse) surveille **tous** les nouveaux lancements. Avec npm, les options se placent après `--` : `npm run scan -- <MINT> --json`.
+> **Deux commandes, deux usages** : `npm run scan -- <MINT>` analyse **un** token Solana donné ; `npm run stream [blockchain]` (sans adresse) surveille **tous** les nouveaux lancements d'une blockchain. Avec npm, les options se placent après `--` : `npm run scan -- <MINT> --json`, `npm run stream -- base --sort volume`.
 
 **Sécurité des dépendances** (`npm audit` : 0 vulnérabilité) :
 - `bigint-buffer`, module natif ancien utilisé par `@solana/spl-token` pour lire les entiers u64, a une faille sans correctif publié (GHSA-3gc7-fjrx-p6mg). Il est remplacé par `vendor/bigint-buffer`, une version JavaScript pure à l'API identique : aucun code natif, aucune compilation à l'installation.
@@ -121,6 +133,9 @@ npm run demo -- raydium   # pool Raydium + mint authority active
 | `HOLDER_CENSUS` | `true` | Active le recensement complet des holders |
 | `SOLANA_WS_URL` | dérivé de `SOLANA_RPC_URL` | Mode stream : endpoint(s) WebSocket, séparés par des virgules |
 | `YELLOWSTONE_GRPC_URL` / `YELLOWSTONE_GRPC_TOKEN` | — | Mode stream : source gRPC Geyser (optionnelle) |
+| `STREAM_CHAIN` | `solana` | Mode stream : blockchain utilisée quand aucune n'est donnée en argument |
+| `RPC_URL_<CHAÎNE>` | RPC public de la chaîne | Mode stream EVM : RPC HTTP, ex. `RPC_URL_BASE`, `RPC_URL_ROBINHOOD` |
+| `WS_URL_<CHAÎNE>` | WebSocket public, s'il existe | Mode stream EVM : endpoint(s) WebSocket séparés par des virgules, ex. `WS_URL_BSC` |
 
 ### Compilation
 
@@ -181,48 +196,57 @@ Extrait de `npm run demo` (scénario simulé) :
 
 ## Mode stream (temps réel)
 
-Le mode stream écoute **en continu** toutes les transactions du programme Pump.fun. Il rend un verdict sur chaque nouveau token **au moment même où sa création est reçue**, puis suit son **activité réelle** : trades, volume, capitalisation. Aucune requête RPC n'est faite sur le chemin critique.
+Le mode stream écoute **en continu** les transactions d'une blockchain. Sur Solana, il suit le programme Pump.fun : il rend un verdict sur chaque nouveau token **au moment même où sa création est reçue**, puis suit son **activité réelle** : trades, volume, capitalisation. Aucune requête RPC n'est faite sur le chemin critique. Les chaînes EVM sont décrites dans [la section suivante](#mode-stream-sur-les-blockchains-evm).
 
-La plupart des lancements Pump.fun n'ont jamais d'acheteur : un verdict VERT signifie seulement « aucune manipulation détectée ». Le tableau de bord n'affiche donc que les tokens **ACTIFS**, qui ont franchi un seuil de **trades**, triés par activité. Le nombre de holders n'est pas utilisé comme critère : il se gonfle trop facilement en répartissant des achats sur des wallets jetables.
+La plupart des lancements n'ont jamais d'acheteur : un verdict VERT signifie seulement « aucune manipulation détectée ». Le tableau de bord n'affiche donc que les tokens **ACTIFS**, qui ont franchi un seuil de **trades**, triés par activité. Le nombre de holders n'est pas utilisé comme critère : il se gonfle trop facilement en répartissant des achats sur des wallets jetables.
 
 ```bash
-npm run stream                                  # tableau de bord live, trié par nombre de trades
+npm run stream                                  # Solana : tableau de bord live, trié par nombre de trades
+npm run stream robinhood                        # une autre blockchain (voir --chains)
+npm run stream -- --chains                      # blockchains prises en charge
 npm run stream -- --sort volume --only vert     # tri par volume, risque VERT uniquement
-npm run stream -- --min-trades 50               # seuil ACTIF plus strict
+npm run stream -- base --min-trades 50          # blockchain + options : tout après `--`
 npm run stream -- --all                         # journal de chaque lancement (T0, T1, T2…)
 npm run stream -- --jsonl --phases actif,alerte > actifs.jsonl   # flux JSON pour un bot
 npm run stream -- --webhook https://mon-bot/hook
-npm run demo:stream                             # démo hors-ligne (faux nœud WebSocket)
+npm run demo:stream                             # démo hors-ligne Solana (faux nœud WebSocket)
+npm run demo:stream -- robinhood                # démo hors-ligne EVM (faux nœud JSON-RPC)
 npm run bench                                   # mesure de la latence du chemin critique
 ```
 
+> Sans option, `npm run stream robinhood` suffit. Dès qu'il y a une option, tout se place après `--` (sinon npm intercepte les options) : `npm run stream -- robinhood --sort volume`.
+
 ### Tableau de bord
 
+Extrait de `npm run demo:stream` :
+
 ```text
-Solana Token Risk Scanner — stream  22:58:03 · en ligne depuis 4m12s · Ctrl+C pour quitter
+Token Risk Scanner — stream Solana (Pump.fun)  22:58:03 · en ligne depuis 4m12s · Ctrl+C pour quitter
 412 tx/s · 1 187 lancements · 9 actifs · décision T0 p50 25 µs / p99 205 µs · slot 330000026 · ws:mainnet.helius-rpc.com 48 211
 
 CLASSEMENT PAR NOMBRE DE TRADES — tokens actifs (≥ 15 trades) · lancements sans activité masqués
- #  Symbole     Âge  Holders  Trades       A/V  1 min  Vol SOL  MCap SOL  Courbe  Top10     Dev  Risque      Mint
- 1  MOON         4s       21      23      22/1     23     35,2      64,2    46 %   27 %   vendu  ROUGE  100  FbPLZ9KtDKQkapqaWRtXnbqQBykZpvnFEzKFtsX1ABJF
- 2  HFROG        4s       20      32      26/6     32     14,9      47,3    31 %   18 %   1,8 %  VERT     0  DS6RXEnn7oAXtTXGXVDT3xNJ9fQxTq3Z5zwkzWwAoaqA
- 3  WHALE        4s       16      16      16/0     16     19,4      75,7    53 %   42 %   0,0 %  ROUGE   70  HfK7zVcCs1ZTD1fWK1kKTBfmNbaWdq3YT7NZizK6ysTZ
+ #  Symbole       Âge  Trades        A/V  1 min        Volume          MCap  Courbe  Holders  Top10     Dev  Risque      Adresse
+ 1  HFROG          4s      32       26/6     32      14,9 SOL      47,3 SOL    31 %       20   18 %   1,8 %  VERT     0  7mjQFhfzANqaGVTG6RENFBqNpJrsnqi5HDhNK4BrrdJ3
+ 2  MOON           4s      23       22/1     23      35,2 SOL      64,2 SOL    46 %       21   27 %   vendu  ROUGE  100  H1KKhfTbbGXrTfKJyaFGSpeaX7cRqzYbRXA4btfZQV3j
+ 3  WHALE          4s      16       16/0     16      19,4 SOL      75,7 SOL    53 %       16   42 %   0,0 %  ROUGE   70  FMncUBdKagzNhG4txUGRSgqozQMnke4S5FkQNjMFBw94
 
 DERNIERS ÉVÉNEMENTS
-22:58:02.046 ⚠ ALERTE ROUGE  100  MOON   FbPLZ9KtDKQkapqaWRtXnbqQBykZpvnFEzKFtsX1ABJF · le dev vend ! · 21 holders
-22:58:00.512 ★ ACTIF  ROUGE   70  WHALE  HfK7zVcCs1ZTD1fWK1kKTBfmNbaWdq3YT7NZizK6ysTZ · 16 holders · 16 trades · vol 19,4 SOL · mcap 76 SOL
-22:57:59.870 ★ ACTIF  VERT     0  HFROG  DS6RXEnn7oAXtTXGXVDT3xNJ9fQxTq3Z5zwkzWwAoaqA · 10 holders · 15 trades · vol 6,2 SOL · mcap 35 SOL
+22:58:02.046 ⚠ ALERTE ROUGE  100  MOON   H1KKhfTbbGXrTfKJyaFGSpeaX7cRqzYbRXA4btfZQV3j · le dev vend ! · 23 trades
+22:58:00.512 ★ ACTIF  ROUGE   70  WHALE  FMncUBdKagzNhG4txUGRSgqozQMnke4S5FkQNjMFBw94 · 16 trades · vol 19,4 SOL · mcap 76 SOL
+22:57:59.870 ★ ACTIF  VERT     0  HFROG  7mjQFhfzANqaGVTG6RENFBqNpJrsnqi5HDhNK4BrrdJ3 · 15 trades · vol 6,2 SOL · mcap 35 SOL
 ```
 
 | Colonne | Signification |
 |---|---|
-| Holders | Wallets détenant un solde > 0, reconstruit à partir des achats et ventes. **Indicatif seulement** : ni seuil ni tri ne l'utilisent |
 | Trades · A/V | Nombre total de trades, dont achats / ventes |
 | 1 min | Trades sur la dernière minute (momentum) |
-| Vol. SOL · MCap SOL | Volume échangé ; capitalisation au prix spot de la bonding curve |
-| Courbe | Progression vers la graduation (`migré` une fois la pool créée) |
+| Volume · MCap | Volume échangé ; capitalisation au prix spot, dans la devise de cotation (SOL, WETH, WBNB…) |
+| Courbe | Solana : progression vers la graduation (`migré` une fois la pool créée) |
+| Holders | Solana : wallets détenant un solde > 0, reconstruit à partir des achats et ventes. **Indicatif seulement** : ni seuil ni tri ne l'utilisent |
 | Top10 · Dev | Part de la supply détenue par les 10 plus gros wallets ; part encore détenue par le dev (`vendu` s'il a vendu) |
-| Risque | Score rapide recalculé en continu, **concentration réelle comprise** |
+| Risque | Score rapide recalculé en continu, **concentration réelle comprise** (`audit…` sur EVM tant que le contrat n'est pas audité) |
+
+Les colonnes sans donnée pour la blockchain choisie sont masquées : sur EVM, Courbe, Holders et Top10 n'apparaissent pas.
 
 Le tableau se redessine toutes les 2 s dans un terminal. Si la sortie est redirigée vers un fichier, les événements s'écrivent au fil de l'eau et le classement toutes les 30 s.
 
@@ -283,24 +307,31 @@ Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transacti
 
 | Option | Description |
 |---|---|
+| `[blockchain]` | Premier argument : `solana` (défaut, ou `$STREAM_CHAIN`), `robinhood`, `base`, `bsc`… Alias et noms complets acceptés (`hood`, `bnb`, `"Robinhood Chain"`) |
+| `--chains` | Affiche les blockchains prises en charge et quitte |
 | `--sort <clé>` | Tri du classement : `trades` (défaut), `volume`, `momentum` (trades / min), `mcap` |
 | `--min-trades <n>` | Seuil pour qu'un token devienne ACTIF (défaut 15 trades) |
 | `--top <n>` | Lignes du classement (défaut 15) |
 | `--only <niveaux>` | Ne garde que ces niveaux de risque : `vert`, `orange`, `rouge` ou une combinaison (`vert,orange`) |
 | `--refresh <s>` | Rafraîchissement du tableau (défaut 2 s, ou 30 s si la sortie n'est pas un terminal) |
-| `--ws <url>` | Endpoint WebSocket, répétable (défaut : `$SOLANA_WS_URL`, sinon dérivé de `$SOLANA_RPC_URL`) |
-| `--grpc <url>` / `--grpc-token <jeton>` | Source Yellowstone gRPC (défaut : `$YELLOWSTONE_GRPC_URL` / `$YELLOWSTONE_GRPC_TOKEN`) |
-| `--bundle-slots <n>` | Slots observés avant le verdict T1 (défaut 2 : création + slot suivant) |
+| `--ws <url>` | Endpoint WebSocket, répétable. Solana : `$SOLANA_WS_URL`, sinon dérivé de `$SOLANA_RPC_URL`. EVM : `$WS_URL_<CHAÎNE>`, sinon WebSocket public de la chaîne |
+| `--rpc <url>` | RPC HTTP (ou WebSocket). Solana : `$SOLANA_RPC_URL`. EVM : `$RPC_URL_<CHAÎNE>`, sinon RPC public. Un RPC fourni n'est jamais remplacé par un endpoint public |
+| `--grpc <url>` / `--grpc-token <jeton>` | Solana : source Yellowstone gRPC (défaut : `$YELLOWSTONE_GRPC_URL` / `$YELLOWSTONE_GRPC_TOKEN`) |
+| `--bundle-slots <n>` | Solana : slots observés avant le verdict T1 (défaut 2 : création + slot suivant) |
 | `--track <s>` | Durée maximale de suivi d'un token (défaut 1800 s). Un lancement jamais actif est oublié après 5 min sans trade |
-| `--no-enrich` / `--enrich-tx <n>` | Désactive / dimensionne l'enrichissement RPC des créateurs (défaut 25 tx) |
-| `--deep-scan` | Lance le scan complet (holders, réserve, créateur…) de chaque token qui devient ACTIF (hors ROUGE) |
+| `--no-enrich` / `--enrich-tx <n>` | Solana : désactive / dimensionne l'enrichissement RPC des créateurs (défaut 25 tx) |
+| `--deep-scan` | Solana : lance le scan complet (holders, réserve, créateur…) de chaque token qui devient ACTIF (hors ROUGE) |
+| `--poll-ms <ms>` | EVM sans WebSocket : intervalle d'interrogation `eth_getLogs` (défaut : temps de bloc, entre 250 ms et 2 s) |
+| `--audit-all` | EVM : audite chaque nouvelle pool dès sa création (défaut : seulement les tokens ACTIFS, pour économiser le RPC) |
+| `--quote <adresse>` | EVM : devise de cotation supplémentaire (stablecoin, token de launchpad…), répétable |
+| `--monitor <s>` | EVM : intervalle de relecture du solde du dev et de la liquidité des tokens actifs (défaut 15 s) |
 | `--all` | Journal de chaque lancement (T0, T1, T2, ACTIF, ALERTE) au lieu du tableau de bord |
-| `--jsonl` | Une ligne JSON par événement sur stdout, avec l'objet `activity` (holders, trades, volume, mcap, top10…) |
+| `--jsonl` | Une ligne JSON par événement sur stdout, avec l'objet `activity` (trades, volume, mcap…) et le champ `chain` |
 | `--phases <liste>` | Événements émis en `--all` / `--jsonl` / webhook : `t0,t1,t2,actif,alerte` |
 | `--webhook <url>` | POST JSON des événements (en tableau de bord : ACTIF et ALERTE) pour un bot Telegram / Discord / trading |
-| `--cache <fichier>` | Cache de réputation (défaut `.cache/creators.json`) |
+| `--cache <fichier>` | Cache de réputation (défaut `.cache/creators.json` sur Solana, `.cache/creators-<chaîne>.json` sur EVM) |
 | `--stats <s>` | Statistiques de débit, latence et course des sources en `--all` / `--jsonl` (défaut 30 s) |
-| `--no-warmup` | Saute le préchauffage JIT |
+| `--no-warmup` | Solana : saute le préchauffage JIT |
 
 ### Journal complet (`npm run stream -- --all`)
 
@@ -315,6 +346,115 @@ Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transacti
 ⚠ ALERTE ROUGE  100  MOON    le dev vend !
                       ✖ Le dev a vendu ses tokens
 ```
+
+---
+
+## Mode stream sur les blockchains EVM
+
+```bash
+npm run stream robinhood                           # Robinhood Chain
+npm run stream -- base --sort volume --only vert   # Base, tri par volume, risque VERT uniquement
+npm run stream -- bsc --ws wss://mon-noeud-bsc     # BNB Chain avec un WebSocket dédié
+npm run demo:stream -- robinhood                   # démo hors-ligne
+```
+
+Le tableau de bord, le tri, les niveaux de risque et les sorties (`--all`, `--jsonl`, `--webhook`) sont les mêmes que sur Solana. Les montants sont exprimés dans la devise de cotation de la pool (WETH, WBNB, ETH natif…).
+
+### Blockchains prises en charge
+
+Ce sont les 19 réseaux actifs sur Based Bot. `npm run stream -- --chains` affiche la même liste.
+
+| Clé | Réseau | Chain ID | Devise | DEX nommés | WebSocket public |
+|---|---|---|---|---|---|
+| `solana` (`sol`) | Solana | — | SOL | Pump.fun (bonding curve) | dérivé du RPC |
+| `ethereum` (`eth`) | Ethereum | 1 | ETH | Uniswap v2 / v3 / v4 | non |
+| `base` | Base | 8453 | ETH | Uniswap v2 / v3 / v4 | non |
+| `bsc` (`bnb`) | BNB Smart Chain | 56 | BNB | PancakeSwap v2 / v3, Uniswap v2 / v3 / v4 | non |
+| `avalanche` (`avax`) | Avalanche | 43114 | AVAX | Uniswap v2 / v3 / v4 | non |
+| `arbitrum` (`arb`) | Arbitrum One | 42161 | ETH | Uniswap v2 / v3 / v4 | non |
+| `abstract` (`abs`) | Abstract | 2741 | ETH | forks génériques | oui |
+| `hyperevm` (`hype`) | HyperEVM | 999 | HYPE | forks génériques | non |
+| `ink` | Ink | 57073 | ETH | Uniswap v2 / v3 / v4 | oui |
+| `story` (`ip`) | Story (Data Network) | 1514 | DATA | forks génériques | non |
+| `xlayer` (`okx`) | X Layer | 196 | OKB | Uniswap v2 / v3 / v4 | non |
+| `unichain` | Unichain | 130 | ETH | Uniswap v2 / v3 / v4 | non |
+| `plasma` (`xpl`) | Plasma | 9745 | XPL | forks génériques | non |
+| `monad` (`mon`) | Monad | 143 | MON | Uniswap v2 / v3 / v4 | oui |
+| `megaeth` (`mega`) | MegaETH | 4326 | ETH | Uniswap v2 / v3 / v4 | oui |
+| `tempo` | Tempo | 4217 | USD | Uniswap v2 / v3 / v4 | oui |
+| `robinhood` (`hood`) | Robinhood Chain | 4663 | ETH | Uniswap v2 / v3 / v4 | oui |
+| `arc` | Arc | 5042 | USDC | Uniswap v2 / v3 / v4 | non |
+| `stable` | Stable | 988 | USDT0 | forks génériques | oui |
+
+Identifiants, RPC publics et devises proviennent de `viem/chains`. Les adresses des factories et des wrapped natifs proviennent des SDK officiels (`@uniswap/sdk-core`, `@pancakeswap/sdk`, `@pancakeswap/v3-sdk`).
+
+### Comment un lancement est détecté
+
+```
+ nœud EVM ──(eth_subscribe "logs" en WebSocket, sinon eth_getLogs à chaque bloc)──▶ logs bruts
+      │  filtre sur 9 signatures d'événements, quel que soit le contrat émetteur
+      ▼
+      ├─ T0     nouvelle pool   PairCreated (v2) · PoolCreated (v3, Solidly / Aerodrome) · Initialize (v4)
+      │                         → côté token, côté devise de cotation ───────────────▶ immédiat
+      ├─ activité               chaque Swap de la pool : achat ou vente, volume, prix, capitalisation
+      ├─ ACTIF                  seuil de trades franchi ─▶ entrée au classement + audit du contrat
+      ├─ T1     audit           lectures groupées (Multicall3) : propriétaire, bytecode, proxy,
+      │                         créateur, part du dev, liquidité, LP brûlés ────────▶ quelques allers-retours RPC
+      └─ ALERTE                 relecture toutes les --monitor s : le dev vend, la liquidité est retirée
+```
+
+- **Filtre générique** : le flux écoute les événements standard de Uniswap v2 / v3 / v4 et de Solidly / Aerodrome, quel que soit le contrat qui les émet. Tous les forks sont donc vus (PancakeSwap, SushiSwap, DEX propres à une chaîne, launchpads qui migrent vers une pool standard), même sur une chaîne sans DEX connu. Les factories connues servent seulement à nommer le DEX.
+- **Devise de cotation** : une pool est retenue si elle associe un nouveau token à une devise connue. Ce peut être le natif (pools v4), le wrapped natif, une devise passée avec `--quote`, ou une devise **apprise** automatiquement, c'est-à-dire un token présent dans au moins 3 nouvelles pools. Les pools entre deux devises (WETH/USDC…) sont ignorées. Les montants de chaque swap sont ramenés au point de vue de la pool pour distinguer achats et ventes, y compris en v4 où les signes sont inversés.
+- **Audit à la demande** : seuls les tokens ACTIFS sont audités. Sinon, les milliers de pools mortes créées chaque jour épuiseraient le quota RPC. `--audit-all` audite chaque pool dès sa création.
+- **Créateur** : c'est l'émetteur (`from`) de la transaction qui crée la pool. Sa réputation (lancements, ventes rapides) est persistée par chaîne dans `.cache/creators-<chaîne>.json`.
+
+### Audit du contrat et score
+
+Les fonctions dangereuses sont repérées dans le **bytecode déployé** : on y cherche les sélecteurs de fonctions (`PUSH4`) de `mint`, `blacklist`, `setBots`, `pause`, `setTradingEnabled`, `setSellTax`, `setMaxWallet`… Ni code source vérifié ni explorateur ne sont nécessaires.
+
+| Signal | Effet sur le score |
+|---|---|
+| Proxy modifiable (EIP-1967) : le code peut être remplacé | +40, plancher 65 |
+| Fonction de mint et propriétaire actif | +40, plancher 60 |
+| Blacklist / pause et propriétaire actif (honeypot possible) | +35, plancher 65 |
+| Taxes modifiables par le propriétaire | +20 |
+| Limites de transaction / wallet modifiables | +5 |
+| Propriétaire non renoncé | +10 |
+| Le créateur détient > 10 / 20 / 40 % de la supply | +15 / +30 / +40 (plancher 75 au-delà de 40 %) |
+| Wallet créateur neuf (< 5 transactions) | +10 |
+| LP brûlés < 50 % (pools v2) | +15 |
+| Aucune liquidité dans la pool | +20 |
+| Créateur vu 2 / ≥ 3 / ≥ 5 fois en 24 h | +20 / +40 / +60 (plancher 70 à 10) |
+| Créateur ayant déjà vendu rapidement 1 / ≥ 3 de ses tokens | +25 / +45 (plancher 70) |
+| ALERTE : le dev vend (solde < 50 % de son maximum observé) | +40, plancher 70 |
+| ALERTE : liquidité retirée (< 20 % de son maximum observé) | plancher 90 |
+
+Extrait de `npm run demo:stream -- robinhood --all` :
+
+```text
+Token Risk Scanner — mode stream · Robinhood Chain (chain ID 4663)
+⚡ T0     audit…      ?            0x9704…e764 · nouvelle pool Uniswap v2 cotée en WETH · bloc 1001
+⚡ T0     audit…      ?            0x32f3…5f06 · nouvelle pool Uniswap v3 cotée en WETH · bloc 1002
+★ ACTIF  audit…      ?            0x32f3…5f06 · 10 trades · 1s après la création de la pool · Uniswap v3
+◆ T1     VERT     0  HFROG        Hood Frog · 0x9704…e764 · audit du contrat · liquidité 8,000 WETH
+◆ T1     ROUGE  100  MOON         Moon Rocket · 0x32f3…5f06 · audit du contrat · liquidité 5,000 WETH
+                      ✖ Fonction de mint (mint) et propriétaire actif : la supply peut être gonflée
+                      ✖ Blacklist / pause (setBots) : le propriétaire peut bloquer les ventes (honeypot possible)
+                      ▲ Propriétaire non renoncé (0xbb…f6e1)
+                      ✖ Le créateur détient 35,00 % de la supply
+                      ▲ Wallet créateur neuf (1 transaction)
+⚠ ALERTE ROUGE  100  MOON         0x32f3…5f06 · le dev vend !
+⚠ ALERTE ROUGE  100  MOON         0x32f3…5f06 · liquidité retirée (rug) !
+                      ✖ Liquidité retirée de la pool (rug pull)
+```
+
+### Sources et vitesse
+
+Sur EVM, le délai de détection est borné par le **temps de bloc** de la chaîne : de ~250 ms (Arbitrum, Robinhood Chain) à 12 s (Ethereum). Le calcul local reste de l'ordre de la microseconde.
+
+- **WebSocket** (`eth_subscribe "logs"`) : les logs sont poussés dès que le nœud reçoit le bloc. C'est la source par défaut sur les chaînes qui publient un WebSocket public (colonne « WebSocket public » ci-dessus).
+- **Interrogation HTTP** (`eth_getLogs`) : c'est le repli sur les autres chaînes, à un rythme calé sur le temps de bloc (`--poll-ms` pour l'ajuster). La plage interrogée est réduite automatiquement si le RPC la refuse.
+- Les RPC publics limitent fortement `eth_getLogs`. Pour un usage réel, configurez un fournisseur dédié (Alchemy, QuickNode, Infura, dRPC, Ankr…) avec `WS_URL_<CHAÎNE>` et `RPC_URL_<CHAÎNE>` dans `.env`, ou `--ws` / `--rpc`. Plusieurs `--ws` sont mis en course comme sur Solana.
 
 ---
 
@@ -388,11 +528,21 @@ src/
 │   └── creator.ts        # Identification et historique du créateur
 ├── scoring/engine.ts     # Barème, planchers, score global
 ├── report/console.ts     # Rendu terminal + JSON
+├── chains/registry.ts    # Les 19 blockchains du mode stream : clés, alias, DEX connus, wrapped natif
+├── evm/                  # Mode stream sur les chaînes EVM
+│   ├── cli.ts            # Sources (WebSocket / HTTP), client viem, rendu des événements
+│   ├── engine.ts         # Nouvelles pools, devises de cotation, swaps, ACTIF, audits, alertes
+│   ├── events.ts         # Décodage des logs Uniswap v2 / v3 / v4 et Solidly / Aerodrome
+│   ├── sources.ts        # eth_subscribe "logs" (WebSocket) et eth_getLogs (interrogation HTTP)
+│   ├── audit.ts          # Audit ERC-20 : propriétaire, sélecteurs du bytecode, proxy, dev, liquidité, LP
+│   └── score.ts          # Score de risque EVM (fonction pure)
 ├── stream/               # Mode temps réel
-│   ├── cli.ts            # Commande stream : sources, sorties (console, JSONL, webhook), stats
-│   ├── engine.ts         # Moteur : course multi-sources, suivi des lancements, T0 / T1 / T2 / ACTIF / alertes
+│   ├── cli.ts            # Commande stream : choix de la blockchain, puis Solana (sources, sorties, stats)
+│   ├── cli-common.ts     # Options, filtres et webhook communs à toutes les chaînes
+│   ├── live-ui.ts        # Tableau de bord live (terminal ou sortie redirigée), journal, JSONL
+│   ├── engine.ts         # Moteur Solana : course multi-sources, suivi des lancements, T0 / T1 / T2 / ACTIF / alertes
 │   ├── activity.ts       # Holders exacts, trades, volume, momentum, capitalisation, concentration
-│   ├── dashboard.ts      # Classement des tokens actifs (tri par holders, trades, volume…)
+│   ├── dashboard.ts      # Classement des tokens actifs (tri par trades, volume, momentum, mcap)
 │   ├── events.ts         # Décodage des événements Anchor Pump.fun depuis les logs
 │   ├── fast-score.ts     # Score rapide (fonction pure) + statistiques de bundle
 │   ├── reputation.ts     # Cache de réputation des créateurs (persisté)
@@ -400,8 +550,8 @@ src/
 │   ├── synthetic.ts      # Transactions synthétiques (préchauffage, tests, démo, bench)
 │   └── sources/          # WebSocket (logsSubscribe) et Yellowstone gRPC
 └── utils/                # BigNumber (stats), formatage FR, couleurs ANSI
-test/                     # Tests unitaires + bout en bout sur RPC simulé
-scripts/                  # demo.ts, demo-stream.ts (démos hors-ligne), bench.ts (latence)
+test/                     # Tests unitaires + bout en bout sur nœuds simulés (Solana et EVM)
+scripts/                  # demo.ts, demo-stream.ts, demo-stream-evm.ts (démos hors-ligne), bench.ts (latence)
 ```
 
 Tous les montants on-chain (u64) sont manipulés en `bigint`. Les pourcentages et les statistiques (moyenne, variance, écart-type, Gini) sont calculés en précision arbitraire avec **bignumber.js**, pour éviter toute perte de précision au-delà de 2^53.
@@ -419,6 +569,8 @@ token ──┬── holders ──┬── clustering
 ## Choisir un endpoint RPC
 
 L'endpoint public `api.mainnet-beta.solana.com` est **fortement limité** (≈ 100 requêtes / 10 s par IP) et refuse souvent les `getProgramAccounts` lourds. Le scanner fonctionne quand même : retries automatiques, et modules indisponibles signalés avec un indice de confiance réduit. Pour une analyse **complète et rapide**, utilisez un RPC dédié : Helius, Triton, QuickNode, Alchemy… Les offres gratuites suffisent généralement.
+
+Sur les chaînes EVM, les RPC publics suffisent pour essayer, mais ils limitent `eth_getLogs` et la plupart n'offrent pas de WebSocket. Déclarez un endpoint dédié par chaîne dans `.env` : `RPC_URL_BASE=…`, `WS_URL_BASE=wss://…`. La clé de la chaîne est en majuscules : `RPC_URL_ROBINHOOD`, `WS_URL_BSC`…
 
 ---
 
@@ -442,6 +594,14 @@ La performance dépend avant tout de la **qualité de l'endpoint RPC**, bien plu
 - **Historique du créateur** limité à `CREATOR_TX_SCAN_LIMIT` transactions : au-delà, le nombre de tokens créés est une borne basse, signalée comme telle.
 - **Mode stream** : le commitment `processed` est le plus rapide mais une transaction peut, rarement, disparaître lors d'un fork ; le verdict T0 repose sur la réputation *observée* (cache vide au premier lancement, d'où l'intérêt de laisser tourner le flux) ; si Pump.fun modifie le format de ses événements, le décodeur ignore les messages illisibles au lieu de planter ; si les logs d'une création sont tronqués (limite de 10 Ko), elle est retrouvée via RPC avec un délai.
 - Les bonding curves Pump.fun créées avant l'ajout du champ `creator` passent par la recherche de la transaction de création du mint (limitée à `MINT_HISTORY_MAX_PAGES` pages).
+- **Mode stream EVM** :
+  - Il est récent : il a été validé contre des nœuds simulés qui reproduisent les formats d'événements officiels, pas encore en conditions réelles sur chacune des 18 chaînes.
+  - Les launchpads à bonding curve (four.meme sur BNB Chain, launchpads de Base ou de Robinhood Chain…) ne sont vus qu'au moment où le token **migre vers une pool DEX standard**. La phase de bonding curve n'est pas suivie.
+  - Il n'y a **pas de simulation d'achat / vente**. Un honeypot dont le blocage est codé autrement (logique cachée dans `_transfer`, fonctions aux noms non standard) peut échapper à la recherche de sélecteurs.
+  - Il n'y a **ni holders ni Top 10** : les obtenir demanderait un indexeur. La part du créateur est lue directement.
+  - Sur les pools Uniswap v4, la liquidité n'est pas lue (pas de LP à brûler) et les hooks ne sont pas analysés.
+  - La devise de cotation doit être le natif, le wrapped natif, une devise `--quote` ou une devise apprise. Les premières pools cotées dans un stablecoin passent inaperçues tant que celui-ci n'a pas été appris.
+- **Scan ponctuel** : il reste propre à Solana (`npm run scan -- <MINT>`).
 
 ---
 
@@ -460,6 +620,15 @@ Les tests de bout en bout démarrent un **faux nœud Solana JSON-RPC** en mémoi
 - une pool Raydium AMM v4 avec mint authority active.
 
 Le mode stream est testé de la même façon, avec un faux nœud WebSocket : abonnement, reconnexion après coupure, verdicts T0 / T1 / T2 / alerte, course entre sources, logs tronqués, puis la commande complète lancée en sous-processus (sortie JSONL, arrêt sur SIGINT).
+
+Le mode EVM s'appuie sur un **faux nœud JSON-RPC EVM** (`test/fixtures/evm.ts`). Il gère `eth_getLogs`, les appels ERC-20 et Multicall3, le bytecode et les transactions. Les tests couvrent :
+
+- le registre des chaînes ;
+- le décodage des logs v2 / v3 / v4 ;
+- achats et ventes, apprentissage des devises, pools natives v4 ;
+- l'audit (propriétaire, mint, blacklist, part du dev, LP brûlés) ;
+- les alertes de vente du dev et de retrait de liquidité ;
+- la commande `stream base` complète en sous-processus.
 
 ---
 

@@ -1,47 +1,54 @@
 /**
- * Commande `stream` : détection temps réel des lancements Pump.fun.
+ * Commande `stream` : détection temps réel des lancements de tokens.
  *
- *   npm run stream                                   tableau de bord trié par activité
- *   npm run stream -- --sort trades --only vert
- *   npm run stream -- --all                          journal de chaque lancement (T0/T1/T2)
- *   npm run stream -- --jsonl --phases actif,alerte  flux JSON pour un bot
+ *   npm run stream                          Solana (Pump.fun), tableau de bord trié par activité
+ *   npm run stream robinhood                Robinhood Chain (et toute chaîne active sur Based Bot)
+ *   npm run stream -- base --sort volume --only vert
+ *   npm run stream -- --chains              liste des blockchains prises en charge
  */
 import { parseArgs } from 'node:util';
 import { PublicKey } from '@solana/web3.js';
+import { CHAINS, chainKeys, findChain, type ChainDef } from '../chains/registry.js';
 import { configFromEnv, maskRpcUrl, type ScannerConfig } from '../config.js';
 import { PUMP_FUN_PROGRAM_ID } from '../constants.js';
 import { extractInitializedMints, scanCreatorHistory } from '../analyzers/creator.js';
+import { runEvmStream, type EvmCliValues } from '../evm/cli.js';
 import { createLimiter, RpcClient } from '../rpc/client.js';
 import { scanToken } from '../scanner.js';
-import type { Finding, RiskLevel } from '../types.js';
-import {
-  c,
-  colorForScore,
-  fmtNum,
-  fmtPct,
-  padEndVisible,
-  padStartVisible,
-  setColorEnabled,
-  shortAddr,
-  truncateVisible,
-} from '../utils/format.js';
+import { c, colorForScore, fmtNum, fmtPct, padEndVisible, padStartVisible, setColorEnabled, shortAddr } from '../utils/format.js';
 import { marketMetrics, tradesLastMinute } from './activity.js';
-import { buildBoard, fmtAge, renderBoard, SORT_KEYS, SORT_LABELS, type SortKey } from './dashboard.js';
-import { StreamEngine, type EngineStats, type Phase, type TokenState, type VerdictEvent } from './engine.js';
+import {
+  intOption,
+  isSelected,
+  jsonReplacer,
+  parseLevels,
+  parsePhases,
+  PHASE_ICON,
+  PHASE_STYLE,
+  postWebhook,
+  renderFindings,
+  type CommonStreamOptions,
+} from './cli-common.js';
+import { buildBoard, fmtAge, SORT_KEYS, type SortKey } from './dashboard.js';
+import { StreamEngine, type EngineStats, type TokenState, type VerdictEvent } from './engine.js';
+import { clock, LiveUi } from './live-ui.js';
 import { ReputationStore } from './reputation.js';
 import { GrpcSource } from './sources/grpc.js';
-import type { StatusHandler, TxSource } from './sources/types.js';
+import type { TxSource } from './sources/types.js';
 import { httpToWs, WebSocketLogsSource } from './sources/websocket.js';
 import { warmUpHotPath } from './warmup.js';
 
 const HELP = () => `
-${c.bold('Mode stream')} — détection temps réel des lancements Pump.fun
+${c.bold('Mode stream')} — détection temps réel des lancements de tokens
 
 ${c.bold('Usage')}
-  npm run stream -- [options]
+  npm run stream -- [blockchain] [options]
 
-Par défaut, un tableau de bord live classe les tokens ${c.bold('actifs')} (seuil de trades franchi)
-par activité, avec leur niveau de risque. Les lancements sans activité sont masqués.
+  blockchain            ${chainKeys().join(', ')}
+                        (défaut : solana ; alias acceptés : eth, bnb, avax, arb, hood… ; --chains pour le détail)
+
+Par défaut, un tableau de bord live classe les tokens ${c.bold('actifs')} (seuil de trades franchi) par
+activité, avec leur niveau de risque. Les lancements sans activité sont masqués.
 
 ${c.bold('Classement')}
   --sort <clé>          trades (défaut), volume, momentum (trades/min), mcap
@@ -49,79 +56,84 @@ ${c.bold('Classement')}
   --top <n>             Lignes du classement (défaut 15)
   --only <niveaux>      Ne garde que ces niveaux de risque, ex. "vert" ou "vert,orange"
   --refresh <s>         Rafraîchissement du tableau (défaut 2 s ; 30 s si la sortie n'est pas un terminal)
+  --track <s>           Durée maximale de suivi d'un token (défaut 1800 s)
 
 ${c.bold('Sources')} (toutes les sources configurées sont mises en course, la plus rapide gagne)
-  --ws <url>            Endpoint WebSocket (répétable). Défaut : $SOLANA_WS_URL, sinon dérivé de $SOLANA_RPC_URL
-  --grpc <url>          Endpoint Yellowstone gRPC (le plus rapide). Défaut : $YELLOWSTONE_GRPC_URL
-  --grpc-token <jeton>  Jeton x-token du gRPC. Défaut : $YELLOWSTONE_GRPC_TOKEN
-  --rpc <url>           RPC HTTP pour l'enrichissement (défaut : $SOLANA_RPC_URL)
+  --ws <url>            Endpoint WebSocket (répétable)
+                          Solana : $SOLANA_WS_URL, sinon dérivé de $SOLANA_RPC_URL
+                          EVM    : $WS_URL_<CHAÎNE> (ex. WS_URL_BASE), sinon WebSocket public de la chaîne
+  --rpc <url>           RPC HTTP (ou WebSocket) : Solana $SOLANA_RPC_URL ; EVM $RPC_URL_<CHAÎNE>, sinon RPC public
+  --grpc <url>          Solana : endpoint Yellowstone gRPC ($YELLOWSTONE_GRPC_URL)
+  --grpc-token <jeton>  Solana : jeton x-token du gRPC ($YELLOWSTONE_GRPC_TOKEN)
+  --poll-ms <ms>        EVM sans WebSocket : intervalle d'interrogation eth_getLogs (défaut : temps de bloc)
 
 ${c.bold('Analyse')}
-  --bundle-slots <n>    Slots observés avant le verdict T1 (défaut 2 : création + slot suivant)
-  --track <s>           Durée maximale de suivi d'un token (défaut 1800 s)
-  --no-enrich           Pas d'enrichissement RPC de l'historique des créateurs
-  --enrich-tx <n>       Transactions inspectées par créateur (défaut 25)
-  --deep-scan           Scan complet (holders, réserve, créateur…) de chaque token qui devient ACTIF
-  --cache <fichier>     Cache de réputation (défaut .cache/creators.json)
+  --bundle-slots <n>    Solana : slots observés avant le verdict T1 (défaut 2)
+  --no-enrich           Solana : pas d'enrichissement RPC de l'historique des créateurs
+  --enrich-tx <n>       Solana : transactions inspectées par créateur (défaut 25)
+  --deep-scan           Solana : scan complet de chaque token qui devient ACTIF
+  --audit-all           EVM : auditer chaque nouvelle pool (défaut : seulement les tokens ACTIFS)
+  --quote <adresse>     EVM : devise de cotation supplémentaire (répétable)
+  --monitor <s>         EVM : relecture du solde du dev et de la liquidité des tokens actifs (défaut 15)
+  --cache <fichier>     Cache de réputation des créateurs (défaut .cache/creators[-chaîne].json)
 
 ${c.bold('Autres sorties')}
-  --all                 Journal de chaque lancement (T0, T1, T2, ACTIF, ALERTE) au lieu du tableau
+  --all                 Journal de chaque événement (T0, T1, T2, ACTIF, ALERTE) au lieu du tableau
   --jsonl               Une ligne JSON par événement sur stdout (pour un bot)
-  --phases <liste>      Événements émis en --all / --jsonl / webhook : t0,t1,t2,actif,alerte (défaut : tous)
+  --phases <liste>      Événements émis en --all / --jsonl / webhook : t0,t1,t2,actif,alerte
   --webhook <url>       POST JSON des événements (tableau de bord : ACTIF et ALERTE)
-  --stats <s>           Statistiques de latence en --all / --jsonl (défaut 30, 0 = jamais)
-  --no-warmup           Saute le préchauffage JIT au démarrage (déconseillé)
+  --stats <s>           Statistiques en --all / --jsonl (défaut 30, 0 = jamais)
+  --no-warmup           Solana : saute le préchauffage JIT au démarrage (déconseillé)
   --no-color            Désactive les couleurs
 `;
 
-const PHASE_STYLE: Record<Phase, (t: string) => string> = {
-  T0: (t) => c.bold(c.cyan(t)),
-  T1: (t) => c.bold(c.blue(t)),
-  T2: (t) => c.bold(c.magenta(t)),
-  ACTIF: (t) => c.bold(c.green(t)),
-  ALERTE: (t) => c.bold(c.red(t)),
-};
-const PHASE_ICON: Record<Phase, string> = { T0: '⚡', T1: '◆', T2: '◇', ACTIF: '★', ALERTE: '⚠' };
-const ALL_PHASES: readonly Phase[] = ['T0', 'T1', 'T2', 'ACTIF', 'ALERTE'];
-
-const clock = (withMs = true) => {
-  const d = new Date();
-  const pad = (n: number, w = 2) => String(n).padStart(w, '0');
-  const base = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  return withMs ? `${base}.${pad(d.getMilliseconds(), 3)}` : base;
-};
-
-const jsonReplacer = (_key: string, value: unknown) => (typeof value === 'bigint' ? value.toString() : value);
-
-function parseLevels(value: string | undefined): Set<RiskLevel> | undefined {
-  if (!value) return undefined;
-  const map: Record<string, RiskLevel> = { vert: 'VERT', green: 'VERT', orange: 'ORANGE', rouge: 'ROUGE', red: 'ROUGE' };
-  const levels = new Set<RiskLevel>();
-  for (const part of value.split(',')) {
-    const level = map[part.trim().toLowerCase()];
-    if (!level) throw new Error(`--only invalide : "${part}" (vert, orange, rouge)`);
-    levels.add(level);
+function printChains(): void {
+  console.log(`\n${c.bold('Blockchains prises en charge par le mode stream')} (réseaux actifs sur Based Bot)\n`);
+  console.log(c.gray('  Clé         Réseau              Chain ID  Devise  Détection'));
+  for (const chain of CHAINS) {
+    if (chain.kind === 'solana') {
+      console.log(`  ${padEndVisible(c.bold(chain.key), 10)}  ${padEndVisible(chain.name, 18)}  ${padStartVisible('—', 8)}  ${padEndVisible('SOL', 6)}  Pump.fun (bonding curve)`);
+      continue;
+    }
+    const dexes = chain.dexes.length > 0 ? [...new Set(chain.dexes.map((d) => d.name.replace(/ v\d$/, '')))].join(', ') : 'forks Uniswap / Solidly';
+    const ws = chain.viem.rpcUrls.default.webSocket?.length ? '' : c.gray(' (HTTP)');
+    console.log(
+      `  ${padEndVisible(c.bold(chain.key), 10)}  ${padEndVisible(chain.name.slice(0, 18), 18)}  ${padStartVisible(String(chain.chainId), 8)}  ${padEndVisible(chain.nativeSymbol, 6)}  nouvelles pools : ${dexes}${ws}`,
+    );
   }
-  return levels;
+  console.log(
+    c.gray(
+      '\n  EVM : détection des pools Uniswap v2/v3/v4 et forks, Solidly/Aerodrome. (HTTP) = pas de WebSocket public :\n' +
+        '  interrogation eth_getLogs, plus lente ; fournissez un WebSocket dédié avec --ws ou WS_URL_<CHAÎNE>.\n',
+    ),
+  );
 }
 
-function parsePhases(value: string | undefined): Set<Phase> | undefined {
-  if (!value) return undefined;
-  const phases = new Set<Phase>();
-  for (const part of value.split(',')) {
-    const phase = part.trim().toUpperCase() as Phase;
-    if (!ALL_PHASES.includes(phase)) throw new Error(`--phases invalide : "${part}" (t0, t1, t2, actif, alerte)`);
-    phases.add(phase);
+const looksLikeAddress = (value: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) || /^0x[0-9a-fA-F]{40}$/.test(value);
+
+/** Résout la blockchain demandée (premier argument), Solana par défaut. */
+export function resolveStreamChain(positionals: string[]): ChainDef {
+  if (positionals.length > 1) throw new Error(`arguments inattendus : ${positionals.slice(1).join(' ')}`);
+  const arg = positionals[0];
+  if (!arg) return findChain(process.env.STREAM_CHAIN ?? 'solana') ?? findChain('solana')!;
+  const chain = findChain(arg);
+  if (chain) return chain;
+  if (looksLikeAddress(arg)) {
+    const scanHint = arg.startsWith('0x')
+      ? `  → L'analyse ponctuelle (scan) ne couvre que Solana pour l'instant.\n`
+      : `  → Pour analyser le token ${arg} : npm run scan -- ${arg}\n`;
+    throw new Error(
+      `le mode stream ne prend pas d'adresse : il surveille en direct TOUS les nouveaux lancements.\n` +
+        scanHint +
+        `  → Pour surveiller les lancements : npm run stream [blockchain]  (npm run stream -- --chains)`,
+    );
   }
-  return phases;
+  throw new Error(`blockchain inconnue : "${arg}". Disponibles : ${chainKeys().join(', ')} (npm run stream -- --chains)`);
 }
 
-function intOption(value: string | undefined, name: string, fallback: number, min = 0): number {
-  if (value === undefined) return fallback;
-  const n = Number.parseInt(value, 10);
-  if (!Number.isFinite(n) || n < min) throw new Error(`--${name} invalide : "${value}" (entier >= ${min})`);
-  return n;
-}
+// ---------------------------------------------------------------------------
+// Solana : rendu des événements
+// ---------------------------------------------------------------------------
 
 /** Résumé d'activité d'un token (holders, trades, volume, capitalisation). */
 function activitySummary(token: TokenState, engine?: StreamEngine) {
@@ -144,11 +156,12 @@ function activitySummary(token: TokenState, engine?: StreamEngine) {
   };
 }
 
-/** Objet JSON d'un événement (sortie --jsonl et webhook). */
+/** Objet JSON d'un événement Solana (sortie --jsonl et webhook). */
 export function verdictToJson(event: VerdictEvent, engine?: StreamEngine) {
   const { token, verdict } = event;
   return {
     ts: new Date().toISOString(),
+    chain: 'solana',
     phase: event.phase,
     mint: token.mint,
     name: token.name,
@@ -196,25 +209,14 @@ function renderVerdict(event: VerdictEvent): string {
   } else if (phase === 'ACTIF') {
     const a = token.activity;
     const market = marketMetrics(a, token.supply);
-    detail = `${token.mint} · ${c.bold(`${fmtNum(a.holders)} holders`)} · ${fmtNum(a.trades)} trades · vol ${fmtNum(market.volumeSol, 1)} SOL · mcap ${fmtNum(market.marketCapSol, 0)} SOL · ${fmtAge(Date.now() - token.detectedAtMs)} après le lancement`;
+    detail = `${token.mint} · ${c.bold(`${fmtNum(a.trades)} trades`)} · vol ${fmtNum(market.volumeSol, 1)} SOL · mcap ${fmtNum(market.marketCapSol, 0)} SOL · ${fmtAge(Date.now() - token.detectedAtMs)} après le lancement`;
   } else {
-    detail = `${token.mint} · ${c.red('le dev vend !')} · ${fmtNum(token.activity.holders)} holders`;
+    detail = `${token.mint} · ${c.red('le dev vend !')} · ${fmtNum(token.activity.trades)} trades`;
   }
   return `${head} ${detail}`;
 }
 
-function renderFindings(findings: Finding[], alreadyShown: Set<string>): string[] {
-  const lines: string[] = [];
-  for (const f of findings) {
-    if ((f.severity !== 'critical' && f.severity !== 'warning') || alreadyShown.has(f.message)) continue;
-    alreadyShown.add(f.message);
-    const icon = f.severity === 'critical' ? c.red('✖') : c.yellow('▲');
-    lines.push(`${' '.repeat(22)}${icon} ${f.message}`);
-  }
-  return lines;
-}
-
-function sourcesSummary(s: EngineStats): string {
+function sourcesSummary(s: { wins: Record<string, number>; lagMs: Record<string, number> }): string {
   return Object.entries(s.wins)
     .sort((a, b) => b[1] - a[1])
     .map(([src, n]) => `${src} ${fmtNum(n)}${s.lagMs[src] ? ` (+${fmtNum(s.lagMs[src]!, 1)} ms)` : ''}`)
@@ -230,6 +232,10 @@ function renderStats(s: EngineStats, elapsedS: number, reputationSize: number): 
       (wins ? ` · sources : ${wins}` : ''),
   );
 }
+
+// ---------------------------------------------------------------------------
+// Point d'entrée
+// ---------------------------------------------------------------------------
 
 export async function runStream(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -249,6 +255,10 @@ export async function runStream(argv: string[]): Promise<number> {
       'no-enrich': { type: 'boolean', default: false },
       'enrich-tx': { type: 'string' },
       'deep-scan': { type: 'boolean', default: false },
+      'audit-all': { type: 'boolean', default: false },
+      quote: { type: 'string', multiple: true },
+      'poll-ms': { type: 'string' },
+      monitor: { type: 'string' },
       cache: { type: 'string' },
       only: { type: 'string' },
       all: { type: 'boolean', default: false },
@@ -256,6 +266,7 @@ export async function runStream(argv: string[]): Promise<number> {
       phases: { type: 'string' },
       webhook: { type: 'string' },
       stats: { type: 'string' },
+      chains: { type: 'boolean', default: false },
       'no-warmup': { type: 'boolean', default: false },
       'no-color': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -266,29 +277,63 @@ export async function runStream(argv: string[]): Promise<number> {
     console.log(HELP());
     return 0;
   }
-  if (positionals.length > 0) {
-    throw new Error(
-      `le mode stream ne prend pas d'adresse : il surveille en direct TOUS les nouveaux lancements Pump.fun.\n` +
-        `  → Pour analyser le token ${positionals[0]} : npm run scan -- ${positionals[0]}\n` +
-        `  → Pour surveiller les lancements           : npm run stream`,
-    );
+  if (values.chains) {
+    printChains();
+    return 0;
   }
 
-  const config: ScannerConfig = configFromEnv();
-  if (values.rpc) config.rpcUrl = values.rpc;
+  const chain = resolveStreamChain(positionals);
   const sort = (values.sort ?? 'trades').toLowerCase() as SortKey;
   if (!SORT_KEYS.includes(sort)) throw new Error(`--sort invalide : "${values.sort}" (${SORT_KEYS.join(', ')})`);
-  const minTrades = intOption(values['min-trades'], 'min-trades', 15, 1);
-  const top = intOption(values.top, 'top', 15, 1);
-  const bundleSlots = intOption(values['bundle-slots'], 'bundle-slots', 2, 1);
-  const trackSeconds = intOption(values.track, 'track', 1_800, 10);
-  const enrichTx = intOption(values['enrich-tx'], 'enrich-tx', 25);
-  const statsS = intOption(values.stats, 'stats', 30);
-  const only = parseLevels(values.only);
-  const phases = parsePhases(values.phases);
-  const mode: 'dashboard' | 'journal' | 'jsonl' = values.jsonl ? 'jsonl' : values.all ? 'journal' : 'dashboard';
+  const mode: CommonStreamOptions['mode'] = values.jsonl ? 'jsonl' : values.all ? 'journal' : 'dashboard';
   const live = mode === 'dashboard' && Boolean(process.stdout.isTTY);
-  const refreshS = intOption(values.refresh, 'refresh', live ? 2 : 30, 1);
+  const common: CommonStreamOptions = {
+    sort,
+    minTrades: intOption(values['min-trades'], 'min-trades', 15, 1),
+    top: intOption(values.top, 'top', 15, 1),
+    trackSeconds: intOption(values.track, 'track', 1_800, 10),
+    statsS: intOption(values.stats, 'stats', 30),
+    refreshS: intOption(values.refresh, 'refresh', live ? 2 : 30, 1),
+    only: parseLevels(values.only),
+    phases: parsePhases(values.phases),
+    mode,
+    live,
+    webhook: values.webhook,
+    cache: values.cache,
+  };
+
+  if (chain.kind === 'evm') {
+    const evmValues: EvmCliValues = {
+      rpc: values.rpc,
+      ws: values.ws,
+      quote: values.quote,
+      pollMs: values['poll-ms'],
+      auditAll: values['audit-all'],
+      monitor: values.monitor,
+    };
+    return runEvmStream(chain, evmValues, common);
+  }
+  return runSolanaStream(values, common);
+}
+
+interface SolanaCliValues {
+  ws?: string[];
+  grpc?: string;
+  'grpc-token'?: string;
+  rpc?: string;
+  'bundle-slots'?: string;
+  'no-enrich'?: boolean;
+  'enrich-tx'?: string;
+  'deep-scan'?: boolean;
+  'no-warmup'?: boolean;
+}
+
+async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOptions): Promise<number> {
+  const config: ScannerConfig = configFromEnv();
+  if (values.rpc) config.rpcUrl = values.rpc;
+  const bundleSlots = intOption(values['bundle-slots'], 'bundle-slots', 2, 1);
+  const enrichTx = intOption(values['enrich-tx'], 'enrich-tx', 25);
+  const { mode, minTrades } = common;
 
   // --- Sources ---------------------------------------------------------------
   const programId = PUMP_FUN_PROGRAM_ID.toBase58();
@@ -307,12 +352,12 @@ export async function runStream(argv: string[]): Promise<number> {
 
   // --- RPC (hors chemin critique) -------------------------------------------
   const rpc = new RpcClient({ url: config.rpcUrl, concurrency: config.concurrency, maxRetries: 2 });
-  const reputation = new ReputationStore(values.cache ?? '.cache/creators.json');
+  const reputation = new ReputationStore(common.cache ?? '.cache/creators.json');
   const loaded = reputation.load();
 
   const engine = new StreamEngine({
     bundleSlots,
-    trackSeconds,
+    trackSeconds: common.trackSeconds,
     reputation,
     activity: { minTrades },
     enrich: values['no-enrich']
@@ -345,37 +390,36 @@ export async function runStream(argv: string[]): Promise<number> {
     },
   });
 
-  // --- Journal d'événements ---------------------------------------------------
-  const recentEvents: string[] = [];
-  const pushEvent = (line: string) => {
-    if (mode === 'dashboard' && !live) console.log(line);
-    recentEvents.unshift(line);
-    if (recentEvents.length > 30) recentEvents.pop();
-  };
-  const log = (line: string) => {
-    if (mode === 'dashboard') pushEvent(line);
-    else if (mode === 'jsonl') process.stderr.write(`${line}\n`);
-    else console.log(line);
-  };
+  // --- Affichage ---------------------------------------------------------------
+  let started = Date.now();
+  let lastTx = 0;
+  let lastTick = Date.now();
+  const ui = new LiveUi({
+    ...common,
+    title: 'Token Risk Scanner — stream Solana (Pump.fun)',
+    statsLine: () => {
+      const now = Date.now();
+      const st = engine.stats();
+      const txRate = (st.txReceived - lastTx) / Math.max(0.001, (now - lastTick) / 1000);
+      lastTx = st.txReceived;
+      lastTick = now;
+      const sourcesText = sourcesSummary(st);
+      return (
+        c.gray(`${fmtNum(txRate, 0)} tx/s · ${fmtNum(st.creates)} lancements · `) +
+        c.bold(`${fmtNum(st.active)} actifs`) +
+        c.gray(` · décision T0 p50 ${fmtNum(st.latency.p50, 0)} µs / p99 ${fmtNum(st.latency.p99, 0)} µs · slot ${st.tipSlot}${sourcesText ? ` · ${sourcesText}` : ''}`)
+      );
+    },
+    summaryLine: () => renderStats(engine.stats(), (Date.now() - started) / 1000, reputation.size),
+    board: (limit) => buildBoard(engine, { sort: common.sort, limit, only: common.only, now: Date.now() }),
+  });
 
-  // --- Événements du moteur ---------------------------------------------------
   const shownFindings = new Map<string, Set<string>>();
   const deepLimit = createLimiter(2);
 
-  /** L'événement est-il retenu pour la sortie courante ? */
-  const selected = (event: VerdictEvent): boolean => {
-    // Une vente du dev sur un token qui a déjà des acheteurs s'affiche quel que soit le filtre de risque.
-    const alertOnLiveToken = event.phase === 'ALERTE' && (event.token.active || event.token.activity.trades >= 3);
-    if (mode === 'dashboard') {
-      if (event.phase === 'ACTIF') return !only || only.has(event.verdict.level);
-      return alertOnLiveToken;
-    }
-    if (phases && !phases.has(event.phase)) return false;
-    return !only || only.has(event.verdict.level) || alertOnLiveToken;
-  };
-
   engine.on('verdict', (event) => {
-    if (!selected(event)) return;
+    const tokenIsLive = event.token.active || event.token.activity.trades >= 3;
+    if (!isSelected(common, { phase: event.phase, level: event.verdict.level, tokenIsLive })) return;
     const json = verdictToJson(event, engine);
 
     if (mode === 'jsonl') {
@@ -385,17 +429,9 @@ export async function runStream(argv: string[]): Promise<number> {
       shownFindings.set(event.token.mint, shown);
       console.log([renderVerdict(event), ...renderFindings(event.verdict.findings, shown)].join('\n'));
     } else {
-      pushEvent(renderVerdict(event));
+      ui.pushEvent(renderVerdict(event));
     }
-
-    if (values.webhook) {
-      fetch(values.webhook, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(json, jsonReplacer),
-        signal: AbortSignal.timeout(2_000),
-      }).catch(() => undefined);
-    }
+    postWebhook(common.webhook, json);
 
     if (values['deep-scan'] && event.phase === 'ACTIF' && event.verdict.level !== 'ROUGE') {
       const { mint, creator, symbol } = event.token;
@@ -408,28 +444,21 @@ export async function runStream(argv: string[]): Promise<number> {
               .filter((f) => f.severity === 'critical')
               .map((f) => f.message)
               .slice(0, 3);
-            log(
+            ui.log(
               `${c.gray(clock())} ${c.bold(padEndVisible('◎ SCAN', 8))} ${color(c.bold(padEndVisible(result.risk.level, 6)))} ${color(padStartVisible(String(result.risk.score), 3))}  ${padEndVisible(c.bold(symbol.slice(0, 12)), 12)} scan complet${alerts.length ? ` — ${alerts.join(' · ')}` : ' — aucun indicateur critique'}`,
             );
           })
           .catch((error: unknown) =>
-            log(c.yellow(`scan complet de ${shortAddr(mint)} impossible : ${error instanceof Error ? error.message : String(error)}`)),
+            ui.log(c.yellow(`scan complet de ${shortAddr(mint)} impossible : ${error instanceof Error ? error.message : String(error)}`)),
           ),
       );
     }
   });
-
-  let dashboardStarted = false;
-  const onStatus: StatusHandler = (source, message, level) => {
-    const line = `${c.gray(clock())} ${level === 'warn' ? c.yellow('!') : c.green('●')} ${c.gray(`[${source}]`)} ${message}`;
-    if (live && dashboardStarted) pushEvent(line);
-    else process.stderr.write(`${line}\n`);
-  };
-  engine.on('status', (message, level) => onStatus('moteur', message, level));
+  engine.on('status', (message, level) => ui.status('moteur', message, level));
 
   // --- Démarrage -------------------------------------------------------------
   process.stderr.write(
-    `${c.bold('Solana Token Risk Scanner — mode stream')}\n` +
+    `${c.bold('Token Risk Scanner — mode stream · Solana (Pump.fun)')}\n` +
       c.gray(
         `  sources : ${sources.map((s) => s.name).join(', ')}\n` +
           `  RPC enrichissement : ${values['no-enrich'] ? 'désactivé' : maskRpcUrl(config.rpcUrl)} · seuil ACTIF ${minTrades} trades · fenêtre bundle ${bundleSlots} slot(s) · ${loaded} créateurs en cache\n`,
@@ -447,93 +476,29 @@ export async function runStream(argv: string[]): Promise<number> {
   }
 
   engine.start();
-  const started = Date.now();
+  started = Date.now();
   let running = 0;
   for (const source of sources) {
     try {
-      await source.start((tx) => engine.handleTx(tx), onStatus);
+      await source.start((tx) => engine.handleTx(tx), ui.status);
       running++;
     } catch (error) {
-      onStatus(source.name, error instanceof Error ? error.message : String(error), 'warn');
+      ui.status(source.name, error instanceof Error ? error.message : String(error), 'warn');
     }
   }
   if (running === 0) throw new Error('aucune source de données n’a pu démarrer');
+  ui.start();
 
-  // --- Tableau de bord ---------------------------------------------------------
-  const boardBlock = (maxRows: number): string[] => {
-    const rows = buildBoard(engine, { sort, limit: maxRows, only, now: Date.now() });
-    const title =
-      c.bold(`CLASSEMENT PAR ${SORT_LABELS[sort].toUpperCase()}`) +
-      c.gray(
-        ` — tokens actifs (≥ ${minTrades} trades)${only ? ` · risque : ${[...only].join(', ')}` : ''} · lancements sans activité masqués`,
-      );
-    return [
-      title,
-      ...(rows.length > 0
-        ? renderBoard(rows, sort)
-        : [c.gray('  Aucun token actif pour le moment : un lancement apparaît ici dès qu’il franchit le seuil.')]),
-    ];
-  };
-
-  let lastTx = 0;
-  let lastTick = Date.now();
-  const renderFrame = (): string[] => {
-    const now = Date.now();
-    const st = engine.stats();
-    const txRate = (st.txReceived - lastTx) / Math.max(0.001, (now - lastTick) / 1000);
-    lastTx = st.txReceived;
-    lastTick = now;
-    const height = process.stdout.rows ?? 40;
-    const eventsShown = Math.min(8, Math.max(3, Math.floor(height / 5)));
-    const boardRows = Math.max(3, Math.min(top, height - eventsShown - 9));
-    const sourcesText = sourcesSummary(st);
-    return [
-      `${c.bold('Solana Token Risk Scanner — stream')}  ${c.gray(`${clock(false)} · en ligne depuis ${fmtAge(now - started)} · Ctrl+C pour quitter`)}`,
-      c.gray(`${fmtNum(txRate, 0)} tx/s · ${fmtNum(st.creates)} lancements · `) +
-        c.bold(`${fmtNum(st.active)} actifs`) +
-        c.gray(
-          ` · décision T0 p50 ${fmtNum(st.latency.p50, 0)} µs / p99 ${fmtNum(st.latency.p99, 0)} µs · slot ${st.tipSlot}${sourcesText ? ` · ${sourcesText}` : ''}`,
-        ),
-      '',
-      ...boardBlock(boardRows),
-      '',
-      c.bold('DERNIERS ÉVÉNEMENTS'),
-      ...(recentEvents.length > 0 ? recentEvents.slice(0, eventsShown) : [c.gray('  (aucun pour le moment)')]),
-    ];
-  };
-
-  const draw = () => {
-    const width = Math.max(40, (process.stdout.columns ?? 200) - 1);
-    const frame = renderFrame().map((line) => `${truncateVisible(line, width)}\x1b[K`);
-    process.stdout.write(`\x1b[H${frame.join('\n')}\x1b[J`);
-  };
-
-  let refreshTimer: NodeJS.Timeout | undefined;
-  if (live) {
-    process.stdout.write('\x1b[?25l\x1b[2J');
-    dashboardStarted = true;
-    draw();
-    refreshTimer = setInterval(draw, refreshS * 1_000);
-  } else if (mode === 'dashboard') {
-    refreshTimer = setInterval(() => console.log(['', ...boardBlock(top), ''].join('\n')), refreshS * 1_000);
-  }
-
-  const statsTimer =
-    mode !== 'dashboard' && statsS > 0
-      ? setInterval(() => log(renderStats(engine.stats(), (Date.now() - started) / 1000, reputation.size)), statsS * 1_000)
-      : undefined;
   const saveTimer = setInterval(() => {
     try {
       reputation.save();
     } catch (error) {
-      onStatus('cache', `sauvegarde impossible : ${error instanceof Error ? error.message : String(error)}`, 'warn');
+      ui.status('cache', `sauvegarde impossible : ${error instanceof Error ? error.message : String(error)}`, 'warn');
     }
   }, 30_000);
 
   return new Promise<number>((resolve) => {
     const shutdown = async () => {
-      clearInterval(refreshTimer);
-      clearInterval(statsTimer);
       clearInterval(saveTimer);
       engine.stop();
       await Promise.all(sources.map((s) => s.stop().catch(() => undefined)));
@@ -542,11 +507,7 @@ export async function runStream(argv: string[]): Promise<number> {
       } catch {
         // ignoré à l'arrêt
       }
-      if (live) process.stdout.write('\x1b[?25h\x1b[2J\x1b[H');
-      if (mode === 'dashboard') console.log(['', ...boardBlock(top), ''].join('\n'));
-      const summary = renderStats(engine.stats(), (Date.now() - started) / 1000, reputation.size);
-      if (mode === 'jsonl') process.stderr.write(`${summary}\n`);
-      else console.log(summary);
+      ui.finish();
       resolve(0);
     };
     process.once('SIGINT', shutdown);

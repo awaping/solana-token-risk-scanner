@@ -113,8 +113,8 @@ export class SignatureRace {
 
   constructor(private readonly capacity = RACE_CAPACITY) {}
 
-  /** Vrai si c'est la première arrivée de cette signature. */
-  observe(tx: StreamTx): boolean {
+  /** Vrai si c'est la première arrivée de cette signature (ou clé d'événement). */
+  observe(tx: Pick<StreamTx, 'signature' | 'source' | 'receivedAt'>): boolean {
     const previous = this.firstSeen.get(tx.signature);
     if (previous) {
       if (previous.source !== tx.source) {
