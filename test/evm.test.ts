@@ -6,11 +6,13 @@ import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPublicClient, defineChain, http, type PublicClient } from 'viem';
-import { findChain, type EvmChain } from '../src/chains/registry.js';
+import { publicEndpoints } from '../src/chains/endpoints.js';
+import { CHAINS, findChain, type EvmChain } from '../src/chains/registry.js';
 import { auditToken, detectCapabilities } from '../src/evm/audit.js';
 import { EvmStreamEngine, type EvmVerdictEvent } from '../src/evm/engine.js';
 import { decodeEvmLog, type EvmLog } from '../src/evm/events.js';
 import { computeEvmScore } from '../src/evm/score.js';
+import { EvmHttpPollingSource } from '../src/evm/sources.js';
 import { buildEvmBoard, renderBoard } from '../src/stream/dashboard.js';
 import { ReputationStore } from '../src/stream/reputation.js';
 import { fakeBytecode, logs, MockEvmNode, randomAddress, randomHash, startMockEvm, type RawLog } from './fixtures/evm.js';
@@ -41,6 +43,86 @@ describe('registre des blockchains', () => {
     assert.equal(hood.chainId, 4663);
     assert.equal(hood.wrappedNative?.symbol, 'WETH');
     assert.equal(findChain('inconnue'), null);
+  });
+
+  test("endpoints publics : au moins un RPC HTTP par chaîne EVM, aucune clé d'API", () => {
+    for (const chain of CHAINS) {
+      if (chain.kind !== 'evm') continue;
+      const endpoints = publicEndpoints(chain);
+      assert.ok(endpoints.http.length > 0, chain.key);
+      assert.equal(new Set(endpoints.http).size, endpoints.http.length, `${chain.key} : doublons`);
+      for (const url of [...endpoints.http, ...endpoints.ws]) {
+        assert.match(url, /^(https|wss):\/\//, url);
+        assert.doesNotMatch(url, /api[_-]?key|demo|[0-9a-f]{32}/i, url);
+      }
+    }
+    const hood = publicEndpoints(findChain('robinhood') as EvmChain);
+    assert.ok(hood.ws.length >= 3);
+    assert.ok(hood.http.includes('https://rpc.mainnet.chain.robinhood.com'));
+  });
+});
+
+describe('sources EVM : bascule entre endpoints et relais HTTP', () => {
+  const servers: Server[] = [];
+  after(() => servers.forEach((s) => s.close()));
+  const until = async (predicate: () => boolean, ms = 5_000) => {
+    const start = Date.now();
+    while (!predicate()) {
+      if (Date.now() - start > ms) throw new Error('délai dépassé');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+  const collector = () => {
+    const statuses: string[] = [];
+    const received: EvmLog[] = [];
+    return { statuses, received, onLog: (log: EvmLog) => received.push(log), onStatus: (_source: string, message: string) => statuses.push(message) };
+  };
+
+  test('endpoint HTTP injoignable : bascule sur le suivant de la liste', async () => {
+    const node = new MockEvmNode(8453, MULTICALL);
+    const { url, server } = await startMockEvm(node);
+    servers.push(server);
+    const c = collector();
+    const source = new EvmHttpPollingSource({ urls: ['http://127.0.0.1:1', url], pollMs: 30 });
+    await source.start(c.onLog, c.onStatus);
+    try {
+      assert.ok(c.statuses.some((m) => /injoignable .* bascule sur http:127\.0\.0\.1:\d+/.test(m)), c.statuses.join('\n'));
+      node.mine([logs.pairCreatedV2(randomAddress(), randomAddress(), WETH, randomAddress())]);
+      await until(() => c.received.length === 1);
+      assert.equal(source.name, `http:${new URL(url).host}`);
+    } finally {
+      await source.stop();
+    }
+  });
+
+  test("relais en veille tant qu'un WebSocket fonctionne, puis reprise sans trou", async () => {
+    const node = new MockEvmNode(8453, MULTICALL);
+    const { url, server } = await startMockEvm(node);
+    servers.push(server);
+    const c = collector();
+    let wsUp = true;
+    let lastSeen = 0;
+    const source = new EvmHttpPollingSource({ urls: [url], pollMs: 30, standby: () => wsUp, lastSeenBlock: () => lastSeen });
+    await source.start(c.onLog, c.onStatus);
+    try {
+      // Bloc livré par le WebSocket : le relais ne consomme pas le RPC.
+      node.mine([logs.pairCreatedV2(randomAddress(), randomAddress(), WETH, randomAddress())]);
+      lastSeen = node.block;
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(node.calls.get('eth_getLogs') ?? 0, 0);
+
+      // Le WebSocket tombe : le bloc miné pendant la coupure est récupéré.
+      node.mine([logs.pairCreatedV2(randomAddress(), randomAddress(), WETH, randomAddress())]);
+      wsUp = false;
+      await until(() => c.received.length === 1);
+      assert.equal(c.received[0]!.blockNumber, lastSeen + 1);
+      assert.ok(c.statuses.some((m) => m.includes('aucun WebSocket disponible')));
+
+      wsUp = true;
+      await until(() => c.statuses.some((m) => m.includes('WebSocket rétabli')));
+    } finally {
+      await source.stop();
+    }
   });
 });
 
@@ -342,6 +424,43 @@ describe('commande `npm run stream base` (bout en bout, RPC HTTP simulé)', () =
       assert.equal(t1.level, 'ROUGE');
       assert.deepEqual(t1.audit?.capabilities.mint, ['mint(address,uint256)']);
 
+      child.kill('SIGINT');
+      assert.equal(await exited, 0);
+    } finally {
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
+  });
+
+  test('WebSocket injoignable : le relais HTTP prend le suivi en charge', async () => {
+    const node = new MockEvmNode(8453, MULTICALL);
+    const { url, server } = await startMockEvm(node);
+    servers.push(server);
+    const token = randomAddress().toLowerCase();
+    node.addToken(token, { name: 'Relay', symbol: 'RLY', decimals: 18, totalSupply: 1_000n * E18, balances: new Map() });
+    const cache = join(mkdtempSync(join(tmpdir(), 'sol-risk-evm-')), 'creators.json');
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx', 'src/index.ts', 'stream', 'base', '--rpc', url, '--ws', 'ws://127.0.0.1:1', '--jsonl', '--all', '--stats', '0', '--poll-ms', '100', '--cache', cache],
+      { env: { ...process.env, NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
+    const waitFor = async (predicate: () => boolean, ms = 20_000) => {
+      const start = Date.now();
+      while (!predicate()) {
+        if (Date.now() - start > ms) throw new Error(`délai dépassé\n${stderr}`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
+    try {
+      await waitFor(() => stderr.includes('aucun WebSocket disponible'));
+      assert.match(stderr, /relais HTTP/);
+      node.mine([logs.pairCreatedV2(randomAddress(), token, WETH, randomAddress())], { from: randomAddress() });
+      await waitFor(() => stdout.includes('"phase":"T0"'));
+      assert.match(stdout, new RegExp(token));
       child.kill('SIGINT');
       assert.equal(await exited, 0);
     } finally {

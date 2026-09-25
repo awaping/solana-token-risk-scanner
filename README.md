@@ -134,8 +134,8 @@ npm run demo -- raydium   # pool Raydium + mint authority active
 | `SOLANA_WS_URL` | dérivé de `SOLANA_RPC_URL` | Mode stream : endpoint(s) WebSocket, séparés par des virgules |
 | `YELLOWSTONE_GRPC_URL` / `YELLOWSTONE_GRPC_TOKEN` | — | Mode stream : source gRPC Geyser (optionnelle) |
 | `STREAM_CHAIN` | `solana` | Mode stream : blockchain utilisée quand aucune n'est donnée en argument |
-| `RPC_URL_<CHAÎNE>` | RPC public de la chaîne | Mode stream EVM : RPC HTTP, ex. `RPC_URL_BASE`, `RPC_URL_ROBINHOOD` |
-| `WS_URL_<CHAÎNE>` | WebSocket public, s'il existe | Mode stream EVM : endpoint(s) WebSocket séparés par des virgules, ex. `WS_URL_BSC` |
+| `RPC_URL_<CHAÎNE>` | RPC publics intégrés | Mode stream EVM : RPC HTTP, ex. `RPC_URL_BASE`, `RPC_URL_ROBINHOOD` |
+| `WS_URL_<CHAÎNE>` | WebSocket publics intégrés | Mode stream EVM : endpoint(s) WebSocket séparés par des virgules, ex. `WS_URL_BSC` |
 
 ### Compilation
 
@@ -314,14 +314,14 @@ Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transacti
 | `--top <n>` | Lignes du classement (défaut 15) |
 | `--only <niveaux>` | Ne garde que ces niveaux de risque : `vert`, `orange`, `rouge` ou une combinaison (`vert,orange`) |
 | `--refresh <s>` | Rafraîchissement du tableau (défaut 2 s, ou 30 s si la sortie n'est pas un terminal) |
-| `--ws <url>` | Endpoint WebSocket, répétable. Solana : `$SOLANA_WS_URL`, sinon dérivé de `$SOLANA_RPC_URL`. EVM : `$WS_URL_<CHAÎNE>`, sinon WebSocket public de la chaîne |
-| `--rpc <url>` | RPC HTTP (ou WebSocket). Solana : `$SOLANA_RPC_URL`. EVM : `$RPC_URL_<CHAÎNE>`, sinon RPC public. Un RPC fourni n'est jamais remplacé par un endpoint public |
+| `--ws <url>` | Endpoint WebSocket, répétable. Solana : `$SOLANA_WS_URL`, sinon dérivé de `$SOLANA_RPC_URL`. EVM : `$WS_URL_<CHAÎNE>`, sinon les WebSocket publics intégrés (3 en course) |
+| `--rpc <url>` | RPC HTTP (ou WebSocket). Solana : `$SOLANA_RPC_URL`. EVM : `$RPC_URL_<CHAÎNE>`, sinon les RPC publics intégrés (bascule automatique). Un RPC fourni n'est jamais remplacé par un endpoint public |
 | `--grpc <url>` / `--grpc-token <jeton>` | Solana : source Yellowstone gRPC (défaut : `$YELLOWSTONE_GRPC_URL` / `$YELLOWSTONE_GRPC_TOKEN`) |
 | `--bundle-slots <n>` | Solana : slots observés avant le verdict T1 (défaut 2 : création + slot suivant) |
 | `--track <s>` | Durée maximale de suivi d'un token (défaut 1800 s). Un lancement jamais actif est oublié après 5 min sans trade |
 | `--no-enrich` / `--enrich-tx <n>` | Solana : désactive / dimensionne l'enrichissement RPC des créateurs (défaut 25 tx) |
 | `--deep-scan` | Solana : lance le scan complet (holders, réserve, créateur…) de chaque token qui devient ACTIF (hors ROUGE) |
-| `--poll-ms <ms>` | EVM sans WebSocket : intervalle d'interrogation `eth_getLogs` (défaut : temps de bloc, entre 250 ms et 2 s) |
+| `--poll-ms <ms>` | EVM : intervalle d'interrogation `eth_getLogs` du relais HTTP (défaut : temps de bloc, entre 250 ms et 2 s) |
 | `--audit-all` | EVM : audite chaque nouvelle pool dès sa création (défaut : seulement les tokens ACTIFS, pour économiser le RPC) |
 | `--quote <adresse>` | EVM : devise de cotation supplémentaire (stablecoin, token de launchpad…), répétable |
 | `--monitor <s>` | EVM : intervalle de relecture du solde du dev et de la liquidité des tokens actifs (défaut 15 s) |
@@ -364,29 +364,29 @@ Le tableau de bord, le tri, les niveaux de risque et les sorties (`--all`, `--js
 
 Ce sont les 19 réseaux actifs sur Based Bot. `npm run stream -- --chains` affiche la même liste.
 
-| Clé | Réseau | Chain ID | Devise | DEX nommés | WebSocket public |
+| Clé | Réseau | Chain ID | Devise | DEX nommés | Endpoints publics intégrés (WS · HTTP) |
 |---|---|---|---|---|---|
-| `solana` (`sol`) | Solana | — | SOL | Pump.fun (bonding curve) | dérivé du RPC |
-| `ethereum` (`eth`) | Ethereum | 1 | ETH | Uniswap v2 / v3 / v4 | non |
-| `base` | Base | 8453 | ETH | Uniswap v2 / v3 / v4 | non |
-| `bsc` (`bnb`) | BNB Smart Chain | 56 | BNB | PancakeSwap v2 / v3, Uniswap v2 / v3 / v4 | non |
-| `avalanche` (`avax`) | Avalanche | 43114 | AVAX | Uniswap v2 / v3 / v4 | non |
-| `arbitrum` (`arb`) | Arbitrum One | 42161 | ETH | Uniswap v2 / v3 / v4 | non |
-| `abstract` (`abs`) | Abstract | 2741 | ETH | forks génériques | oui |
-| `hyperevm` (`hype`) | HyperEVM | 999 | HYPE | forks génériques | non |
-| `ink` | Ink | 57073 | ETH | Uniswap v2 / v3 / v4 | oui |
-| `story` (`ip`) | Story (Data Network) | 1514 | DATA | forks génériques | non |
-| `xlayer` (`okx`) | X Layer | 196 | OKB | Uniswap v2 / v3 / v4 | non |
-| `unichain` | Unichain | 130 | ETH | Uniswap v2 / v3 / v4 | non |
-| `plasma` (`xpl`) | Plasma | 9745 | XPL | forks génériques | non |
-| `monad` (`mon`) | Monad | 143 | MON | Uniswap v2 / v3 / v4 | oui |
-| `megaeth` (`mega`) | MegaETH | 4326 | ETH | Uniswap v2 / v3 / v4 | oui |
-| `tempo` | Tempo | 4217 | USD | Uniswap v2 / v3 / v4 | oui |
-| `robinhood` (`hood`) | Robinhood Chain | 4663 | ETH | Uniswap v2 / v3 / v4 | oui |
-| `arc` | Arc | 5042 | USDC | Uniswap v2 / v3 / v4 | non |
-| `stable` | Stable | 988 | USDT0 | forks génériques | oui |
+| `solana` (`sol`) | Solana | — | SOL | Pump.fun (bonding curve) | mainnet-beta (voir [RPC](#choisir-un-endpoint-rpc)) |
+| `ethereum` (`eth`) | Ethereum | 1 | ETH | Uniswap v2 / v3 / v4 | 4 · 7 |
+| `base` | Base | 8453 | ETH | Uniswap v2 / v3 / v4 | 4 · 6 |
+| `bsc` (`bnb`) | BNB Smart Chain | 56 | BNB | PancakeSwap v2 / v3, Uniswap v2 / v3 / v4 | 4 · 6 |
+| `avalanche` (`avax`) | Avalanche | 43114 | AVAX | Uniswap v2 / v3 / v4 | 2 · 5 |
+| `arbitrum` (`arb`) | Arbitrum One | 42161 | ETH | Uniswap v2 / v3 / v4 | 3 · 5 |
+| `abstract` (`abs`) | Abstract | 2741 | ETH | forks génériques | 2 · 2 |
+| `hyperevm` (`hype`) | HyperEVM | 999 | HYPE | forks génériques | 0 · 2 |
+| `ink` | Ink | 57073 | ETH | Uniswap v2 / v3 / v4 | 3 · 4 |
+| `story` (`ip`) | Story (Data Network) | 1514 | DATA | forks génériques | 0 · 5 |
+| `xlayer` (`okx`) | X Layer | 196 | OKB | Uniswap v2 / v3 / v4 | 1 · 4 |
+| `unichain` | Unichain | 130 | ETH | Uniswap v2 / v3 / v4 | 2 · 4 |
+| `plasma` (`xpl`) | Plasma | 9745 | XPL | forks génériques | 1 · 3 |
+| `monad` (`mon`) | Monad | 143 | MON | Uniswap v2 / v3 / v4 | 3 · 4 |
+| `megaeth` (`mega`) | MegaETH | 4326 | ETH | Uniswap v2 / v3 / v4 | 2 · 2 |
+| `tempo` | Tempo | 4217 | USD | Uniswap v2 / v3 / v4 | 1 · 1 |
+| `robinhood` (`hood`) | Robinhood Chain | 4663 | ETH | Uniswap v2 / v3 / v4 | 3 · 5 |
+| `arc` | Arc | 5042 | USDC | Uniswap v2 / v3 / v4 | 1 · 5 |
+| `stable` | Stable | 988 | USDT0 | forks génériques | 1 · 2 |
 
-Identifiants, RPC publics et devises proviennent de `viem/chains`. Les adresses des factories et des wrapped natifs proviennent des SDK officiels (`@uniswap/sdk-core`, `@pancakeswap/sdk`, `@pancakeswap/v3-sdk`).
+Identifiants et devises proviennent de `viem/chains`. Les adresses des factories et des wrapped natifs proviennent des SDK officiels (`@uniswap/sdk-core`, `@pancakeswap/sdk`, `@pancakeswap/v3-sdk`). Les endpoints publics intégrés (`src/chains/endpoints.ts`) viennent de [Chainlist](https://chainlist.org) (liste DefiLlama) et des RPC officiels des chaînes. Seuls sont retenus les fournisseurs sans pistage, sans clé d'API, et qui acceptent `eth_getLogs`.
 
 ### Comment un lancement est détecté
 
@@ -450,11 +450,31 @@ Token Risk Scanner — mode stream · Robinhood Chain (chain ID 4663)
 
 ### Sources et vitesse
 
-Sur EVM, le délai de détection est borné par le **temps de bloc** de la chaîne : de ~250 ms (Arbitrum, Robinhood Chain) à 12 s (Ethereum). Le calcul local reste de l'ordre de la microseconde.
+**Aucune configuration n'est nécessaire** : chaque chaîne embarque une liste d'endpoints publics gratuits.
 
-- **WebSocket** (`eth_subscribe "logs"`) : les logs sont poussés dès que le nœud reçoit le bloc. C'est la source par défaut sur les chaînes qui publient un WebSocket public (colonne « WebSocket public » ci-dessus).
-- **Interrogation HTTP** (`eth_getLogs`) : c'est le repli sur les autres chaînes, à un rythme calé sur le temps de bloc (`--poll-ms` pour l'ajuster). La plage interrogée est réduite automatiquement si le RPC la refuse.
-- Les RPC publics limitent fortement `eth_getLogs`. Pour un usage réel, configurez un fournisseur dédié (Alchemy, QuickNode, Infura, dRPC, Ankr…) avec `WS_URL_<CHAÎNE>` et `RPC_URL_<CHAÎNE>` dans `.env`, ou `--ws` / `--rpc`. Plusieurs `--ws` sont mis en course comme sur Solana.
+- **WebSocket en course** (`eth_subscribe "logs"`) : jusqu'à 3 WebSocket publics sont connectés en parallèle. Le premier qui livre un log gagne, les doublons sont ignorés, et si l'un tombe, les autres continuent. Un endpoint qui refuse la connexion est signalé une fois, puis retenté de plus en plus rarement (jusqu'à toutes les 30 s).
+- **Relais HTTP** (`eth_getLogs`) : il reste en veille tant qu'un WebSocket fonctionne, sans consommer de quota. Si tous les WebSocket tombent, il prend le relais et reprend au bloc qui suit le dernier reçu, sans trou. Sur les chaînes sans WebSocket public (HyperEVM, Story), c'est la source principale, au rythme du temps de bloc (`--poll-ms` pour l'ajuster).
+- **Bascule** : en cas d'erreur, l'interrogation HTTP et les audits passent à l'endpoint suivant de la liste. La plage `eth_getLogs` est réduite automatiquement si un RPC la refuse.
+
+Le délai de détection est borné par le **temps de bloc** de la chaîne : de ~250 ms (Arbitrum, Robinhood Chain) à 12 s (Ethereum). Le calcul local reste de l'ordre de la microseconde.
+
+#### Où trouver de meilleurs endpoints
+
+Les endpoints publics sont limités en débit. Pour un usage continu, un fournisseur avec clé gratuite est plus fiable et plus rapide :
+
+| Besoin | Où chercher |
+|---|---|
+| Liste des endpoints publics d'une chaîne | [chainlist.org](https://chainlist.org) : cherchez la chaîne, colonne « Privacy » pour le pistage |
+| Clé gratuite multi-chaînes (HTTP + WebSocket) | [Alchemy](https://www.alchemy.com), [QuickNode](https://www.quicknode.com), [dRPC](https://drpc.org), [Ankr](https://www.ankr.com/rpc/) : vérifiez que la chaîne voulue est proposée |
+| Solana | [Helius](https://www.helius.dev) (offre gratuite avec WebSocket), Triton, QuickNode |
+
+Puis déclarez-les dans `.env` : les endpoints fournis remplacent les endpoints publics.
+
+```bash
+RPC_URL_ROBINHOOD=https://…        # RPC HTTP (audits, relais)
+WS_URL_ROBINHOOD=wss://…,wss://…   # un ou plusieurs WebSocket, mis en course
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=…
+```
 
 ---
 
@@ -528,12 +548,14 @@ src/
 │   └── creator.ts        # Identification et historique du créateur
 ├── scoring/engine.ts     # Barème, planchers, score global
 ├── report/console.ts     # Rendu terminal + JSON
-├── chains/registry.ts    # Les 19 blockchains du mode stream : clés, alias, DEX connus, wrapped natif
+├── chains/
+│   ├── registry.ts       # Les 19 blockchains du mode stream : clés, alias, DEX connus, wrapped natif
+│   └── endpoints.ts      # Endpoints publics sans clé par chaîne (Chainlist + RPC officiels)
 ├── evm/                  # Mode stream sur les chaînes EVM
 │   ├── cli.ts            # Sources (WebSocket / HTTP), client viem, rendu des événements
 │   ├── engine.ts         # Nouvelles pools, devises de cotation, swaps, ACTIF, audits, alertes
 │   ├── events.ts         # Décodage des logs Uniswap v2 / v3 / v4 et Solidly / Aerodrome
-│   ├── sources.ts        # eth_subscribe "logs" (WebSocket) et eth_getLogs (interrogation HTTP)
+│   ├── sources.ts        # WebSocket en course (eth_subscribe) et relais HTTP eth_getLogs avec bascule
 │   ├── audit.ts          # Audit ERC-20 : propriétaire, sélecteurs du bytecode, proxy, dev, liquidité, LP
 │   └── score.ts          # Score de risque EVM (fonction pure)
 ├── stream/               # Mode temps réel
@@ -570,7 +592,7 @@ token ──┬── holders ──┬── clustering
 
 L'endpoint public `api.mainnet-beta.solana.com` est **fortement limité** (≈ 100 requêtes / 10 s par IP) et refuse souvent les `getProgramAccounts` lourds. Le scanner fonctionne quand même : retries automatiques, et modules indisponibles signalés avec un indice de confiance réduit. Pour une analyse **complète et rapide**, utilisez un RPC dédié : Helius, Triton, QuickNode, Alchemy… Les offres gratuites suffisent généralement.
 
-Sur les chaînes EVM, les RPC publics suffisent pour essayer, mais ils limitent `eth_getLogs` et la plupart n'offrent pas de WebSocket. Déclarez un endpoint dédié par chaîne dans `.env` : `RPC_URL_BASE=…`, `WS_URL_BASE=wss://…`. La clé de la chaîne est en majuscules : `RPC_URL_ROBINHOOD`, `WS_URL_BSC`…
+Sur les chaînes EVM, le mode stream fonctionne sans configuration grâce aux endpoints publics intégrés, mais ils sont limités en débit. Pour un usage continu, déclarez un endpoint dédié par chaîne dans `.env` : `RPC_URL_BASE=…`, `WS_URL_BASE=wss://…`. La clé de la chaîne est en majuscules : `RPC_URL_ROBINHOOD`, `WS_URL_BSC`… Voir [où trouver de meilleurs endpoints](#où-trouver-de-meilleurs-endpoints).
 
 ---
 
@@ -596,6 +618,7 @@ La performance dépend avant tout de la **qualité de l'endpoint RPC**, bien plu
 - Les bonding curves Pump.fun créées avant l'ajout du champ `creator` passent par la recherche de la transaction de création du mint (limitée à `MINT_HISTORY_MAX_PAGES` pages).
 - **Mode stream EVM** :
   - Il est récent : il a été validé contre des nœuds simulés qui reproduisent les formats d'événements officiels, pas encore en conditions réelles sur chacune des 18 chaînes.
+  - Les endpoints publics intégrés ne sont pas garantis : un fournisseur peut limiter ou fermer son accès gratuit à tout moment. La course entre WebSocket et la bascule HTTP limitent l'impact ; pour un suivi fiable, déclarez vos propres endpoints dans `.env`.
   - Les launchpads à bonding curve (four.meme sur BNB Chain, launchpads de Base ou de Robinhood Chain…) ne sont vus qu'au moment où le token **migre vers une pool DEX standard**. La phase de bonding curve n'est pas suivie.
   - Il n'y a **pas de simulation d'achat / vente**. Un honeypot dont le blocage est codé autrement (logique cachée dans `_transfer`, fonctions aux noms non standard) peut échapper à la recherche de sélecteurs.
   - Il n'y a **ni holders ni Top 10** : les obtenir demanderait un indexeur. La part du créateur est lue directement.
@@ -628,7 +651,8 @@ Le mode EVM s'appuie sur un **faux nœud JSON-RPC EVM** (`test/fixtures/evm.ts`)
 - achats et ventes, apprentissage des devises, pools natives v4 ;
 - l'audit (propriétaire, mint, blacklist, part du dev, LP brûlés) ;
 - les alertes de vente du dev et de retrait de liquidité ;
-- la commande `stream base` complète en sous-processus.
+- la bascule entre endpoints HTTP et le relais HTTP qui reprend sans trou quand les WebSocket tombent ;
+- la commande `stream base` complète en sous-processus, y compris avec un WebSocket injoignable.
 
 ---
 

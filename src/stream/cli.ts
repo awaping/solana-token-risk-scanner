@@ -8,6 +8,7 @@
  */
 import { parseArgs } from 'node:util';
 import { PublicKey } from '@solana/web3.js';
+import { publicEndpoints } from '../chains/endpoints.js';
 import { CHAINS, chainKeys, findChain, type ChainDef } from '../chains/registry.js';
 import { configFromEnv, maskRpcUrl, type ScannerConfig } from '../config.js';
 import { PUMP_FUN_PROGRAM_ID } from '../constants.js';
@@ -61,11 +62,12 @@ ${c.bold('Classement')}
 ${c.bold('Sources')} (toutes les sources configurées sont mises en course, la plus rapide gagne)
   --ws <url>            Endpoint WebSocket (répétable)
                           Solana : $SOLANA_WS_URL, sinon dérivé de $SOLANA_RPC_URL
-                          EVM    : $WS_URL_<CHAÎNE> (ex. WS_URL_BASE), sinon WebSocket public de la chaîne
-  --rpc <url>           RPC HTTP (ou WebSocket) : Solana $SOLANA_RPC_URL ; EVM $RPC_URL_<CHAÎNE>, sinon RPC public
+                          EVM    : $WS_URL_<CHAÎNE> (ex. WS_URL_BASE), sinon WebSocket publics intégrés (en course)
+  --rpc <url>           RPC HTTP (ou WebSocket) : Solana $SOLANA_RPC_URL ;
+                          EVM : $RPC_URL_<CHAÎNE>, sinon RPC publics intégrés (bascule en cas d'erreur)
   --grpc <url>          Solana : endpoint Yellowstone gRPC ($YELLOWSTONE_GRPC_URL)
   --grpc-token <jeton>  Solana : jeton x-token du gRPC ($YELLOWSTONE_GRPC_TOKEN)
-  --poll-ms <ms>        EVM sans WebSocket : intervalle d'interrogation eth_getLogs (défaut : temps de bloc)
+  --poll-ms <ms>        EVM : intervalle d'interrogation eth_getLogs du relais HTTP (défaut : temps de bloc)
 
 ${c.bold('Analyse')}
   --bundle-slots <n>    Solana : slots observés avant le verdict T1 (défaut 2)
@@ -89,22 +91,27 @@ ${c.bold('Autres sorties')}
 
 function printChains(): void {
   console.log(`\n${c.bold('Blockchains prises en charge par le mode stream')} (réseaux actifs sur Based Bot)\n`);
-  console.log(c.gray('  Clé         Réseau              Chain ID  Devise  Détection'));
+  console.log(c.gray('  Clé         Réseau              Chain ID  Devise  Endpoints publics  Détection'));
   for (const chain of CHAINS) {
     if (chain.kind === 'solana') {
-      console.log(`  ${padEndVisible(c.bold(chain.key), 10)}  ${padEndVisible(chain.name, 18)}  ${padStartVisible('—', 8)}  ${padEndVisible('SOL', 6)}  Pump.fun (bonding curve)`);
+      console.log(
+        `  ${padEndVisible(c.bold(chain.key), 10)}  ${padEndVisible(chain.name, 18)}  ${padStartVisible('—', 8)}  ${padEndVisible('SOL', 6)}  ${padEndVisible('mainnet-beta', 17)}  Pump.fun (bonding curve)`,
+      );
       continue;
     }
     const dexes = chain.dexes.length > 0 ? [...new Set(chain.dexes.map((d) => d.name.replace(/ v\d$/, '')))].join(', ') : 'forks Uniswap / Solidly';
-    const ws = chain.viem.rpcUrls.default.webSocket?.length ? '' : c.gray(' (HTTP)');
+    const endpoints = publicEndpoints(chain);
+    const counts = `${endpoints.ws.length} WS · ${endpoints.http.length} HTTP`;
     console.log(
-      `  ${padEndVisible(c.bold(chain.key), 10)}  ${padEndVisible(chain.name.slice(0, 18), 18)}  ${padStartVisible(String(chain.chainId), 8)}  ${padEndVisible(chain.nativeSymbol, 6)}  nouvelles pools : ${dexes}${ws}`,
+      `  ${padEndVisible(c.bold(chain.key), 10)}  ${padEndVisible(chain.name.slice(0, 18), 18)}  ${padStartVisible(String(chain.chainId), 8)}  ${padEndVisible(chain.nativeSymbol, 6)}  ` +
+        `${padEndVisible(endpoints.ws.length > 0 ? counts : c.yellow(counts), 17)}  nouvelles pools : ${dexes}`,
     );
   }
   console.log(
     c.gray(
-      '\n  EVM : détection des pools Uniswap v2/v3/v4 et forks, Solidly/Aerodrome. (HTTP) = pas de WebSocket public :\n' +
-        '  interrogation eth_getLogs, plus lente ; fournissez un WebSocket dédié avec --ws ou WS_URL_<CHAÎNE>.\n',
+      '\n  EVM : détection des pools Uniswap v2/v3/v4 et forks, Solidly/Aerodrome.\n' +
+        '  Endpoints publics intégrés (gratuits, sans clé, limités) : les WebSocket sont mis en course, le HTTP prend le relais.\n' +
+        '  0 WS = interrogation eth_getLogs à chaque bloc, plus lente. Endpoint dédié : --ws / --rpc ou WS_URL_<CHAÎNE> / RPC_URL_<CHAÎNE>.\n',
     ),
   );
 }

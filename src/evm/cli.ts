@@ -1,10 +1,12 @@
 /**
  * Mode stream sur une blockchain EVM (`npm run stream base`, `npm run stream robinhood`…).
  *
- * Sources : WebSocket (option --ws, variable WS_URL_<CHAÎNE> ou WebSocket
- * public de la chaîne), sinon interrogation HTTP (RPC_URL_<CHAÎNE> ou RPC public).
+ * Sources : WebSocket mis en course (option --ws, variable WS_URL_<CHAÎNE>,
+ * sinon WebSocket publics intégrés) et relais HTTP eth_getLogs (RPC_URL_<CHAÎNE>,
+ * sinon RPC publics intégrés, avec bascule d'un endpoint à l'autre).
  */
-import { createPublicClient, http, webSocket, type PublicClient } from 'viem';
+import { createPublicClient, fallback, http, webSocket, type PublicClient } from 'viem';
+import { MAX_PUBLIC_WS, publicEndpoints } from '../chains/endpoints.js';
 import type { EvmChain } from '../chains/registry.js';
 import { maskRpcUrl } from '../config.js';
 import { c, colorForScore, fmtNum, padEndVisible, padStartVisible, shortAddr } from '../utils/format.js';
@@ -27,6 +29,8 @@ export interface EvmCliValues {
 }
 
 const isWs = (url: string) => /^wss?:\/\//i.test(url);
+/** Délai laissé aux WebSocket pour se connecter avant que le relais HTTP ne démarre. */
+const WS_GRACE_MS = 8_000;
 
 /** Symbole de la devise de cotation d'un token (connu avant même l'audit si possible). */
 function quoteSymbol(chain: EvmChain, token: EvmTokenState): string {
@@ -156,25 +160,48 @@ function renderEvmStats(s: EvmEngineStats, elapsedS: number): string {
 
 export async function runEvmStream(chain: EvmChain, values: EvmCliValues, common: CommonStreamOptions): Promise<number> {
   const envKey = chain.key.toUpperCase();
+  const publicRpc = publicEndpoints(chain);
   const rpcArg = values.rpc ?? process.env[`RPC_URL_${envKey}`];
-  const httpUrl = rpcArg && !isWs(rpcArg) ? rpcArg : chain.viem.rpcUrls.default.http[0]!;
+  // RPC HTTP : celui de l'utilisateur, sinon la liste publique (bascule en cas d'échec).
+  const httpUrls = rpcArg && !isWs(rpcArg) ? [rpcArg] : publicRpc.http;
   const envWs = process.env[`WS_URL_${envKey}`]?.split(',').map((u) => u.trim()).filter(Boolean);
   // Priorité aux endpoints fournis par l'utilisateur : un RPC HTTP dédié n'est jamais
-  // remplacé par le WebSocket public de la chaîne (ajoutez --ws pour la poussée temps réel).
+  // remplacé par un WebSocket public (ajoutez --ws pour la poussée temps réel).
   let wsUrls: string[];
   if (values.ws?.length) wsUrls = values.ws;
   else if (envWs?.length) wsUrls = envWs;
   else if (rpcArg) wsUrls = isWs(rpcArg) ? [rpcArg] : [];
-  else wsUrls = (chain.viem.rpcUrls.default.webSocket ?? []).slice(0, 1);
+  else wsUrls = publicRpc.ws.slice(0, MAX_PUBLIC_WS);
 
   const pollMs = values.pollMs !== undefined ? Number.parseInt(values.pollMs, 10) : Math.min(2_000, Math.max(250, chain.blockTimeMs));
   if (!Number.isFinite(pollMs) || pollMs < 50) throw new Error(`--poll-ms invalide : "${values.pollMs}"`);
-  const sources: EvmSource[] =
-    wsUrls.length > 0 ? wsUrls.map((url) => new EvmWebSocketSource(url)) : [new EvmHttpPollingSource({ url: httpUrl, pollMs })];
+
+  // Les WebSocket sont mis en course ; l'interrogation HTTP est la source principale
+  // sans WebSocket, sinon un relais en veille qui reprend si tous les WebSocket tombent.
+  const wsSources = wsUrls.map((url) => new EvmWebSocketSource(url));
+  let sourcesStartedAt = Date.now();
+  let engineRef: EvmStreamEngine | undefined;
+  const poller = new EvmHttpPollingSource({
+    urls: httpUrls,
+    pollMs,
+    standby:
+      wsSources.length > 0
+        ? () =>
+            wsSources.some((ws) => ws.healthy) ||
+            (Date.now() - sourcesStartedAt < WS_GRACE_MS && wsSources.some((ws) => ws.pending))
+        : undefined,
+    lastSeenBlock: () => engineRef?.stats().tipBlock ?? 0,
+  });
+  const sources: EvmSource[] = [...wsSources, poller];
 
   const client = createPublicClient({
     chain: chain.viem,
-    transport: rpcArg && isWs(rpcArg) ? webSocket(rpcArg) : http(httpUrl, { timeout: 10_000, retryCount: 2 }),
+    transport:
+      rpcArg && isWs(rpcArg)
+        ? webSocket(rpcArg)
+        : httpUrls.length > 1
+          ? fallback(httpUrls.map((url) => http(url, { timeout: 10_000, retryCount: 1 })))
+          : http(httpUrls[0], { timeout: 10_000, retryCount: 2 }),
   }) as PublicClient;
 
   const reputation = new ReputationStore(common.cache ?? `.cache/creators-${chain.key}.json`);
@@ -189,6 +216,7 @@ export async function runEvmStream(chain: EvmChain, values: EvmCliValues, common
     quotes: values.quote?.map((q) => q.toLowerCase()),
     refreshSeconds: values.monitor !== undefined ? Math.max(1, Number.parseInt(values.monitor, 10) || 15) : 15,
   });
+  engineRef = engine;
 
   let started = Date.now();
   let lastLogs = 0;
@@ -252,17 +280,27 @@ export async function runEvmStream(chain: EvmChain, values: EvmCliValues, common
   });
   engine.on('status', (message, level) => ui.status('moteur', message, level));
 
+  const spare = (n: number) => (n > 1 ? ` (+${n - 1} de secours)` : '');
+  const auditRpc = rpcArg && isWs(rpcArg) ? maskRpcUrl(rpcArg) : `${maskRpcUrl(httpUrls[0]!)}${spare(httpUrls.length)}`;
+  const sourcesText =
+    wsSources.length > 0
+      ? `${wsSources.map((s) => s.name).join(', ')} · relais HTTP ${poller.name}${spare(httpUrls.length)}`
+      : `${poller.name}${spare(httpUrls.length)} (aucun WebSocket : interrogation toutes les ${pollMs} ms)`;
   process.stderr.write(
     `${c.bold(`Token Risk Scanner — mode stream · ${chain.name} (chain ID ${chain.chainId})`)}\n` +
       c.gray(
-        `  sources : ${sources.map((s) => s.name).join(', ')}${wsUrls.length === 0 ? ` (aucun WebSocket : interrogation toutes les ${pollMs} ms)` : ''}\n` +
-          `  RPC audits : ${maskRpcUrl(rpcArg && isWs(rpcArg) ? rpcArg : httpUrl)} · seuil ACTIF ${common.minTrades} trades · ` +
-          `audit ${values.auditAll ? 'de chaque nouvelle pool' : 'des tokens actifs'} · devise ${chain.wrappedNative?.symbol ?? 'apprise sur les premières pools'} · ${loaded} créateurs en cache\n`,
+        `  sources : ${sourcesText}\n` +
+          `  RPC audits : ${auditRpc} · seuil ACTIF ${common.minTrades} trades · ` +
+          `audit ${values.auditAll ? 'de chaque nouvelle pool' : 'des tokens actifs'} · devise ${chain.wrappedNative?.symbol ?? 'apprise sur les premières pools'} · ${loaded} créateurs en cache\n` +
+          (rpcArg || values.ws?.length || envWs?.length
+            ? ''
+            : `  endpoints publics gratuits (limités) : pour plus de débit, RPC_URL_${envKey} / WS_URL_${envKey} dans .env\n`),
       ),
   );
 
   engine.start();
   started = Date.now();
+  sourcesStartedAt = Date.now();
   let running = 0;
   for (const source of sources) {
     try {
@@ -274,7 +312,7 @@ export async function runEvmStream(chain: EvmChain, values: EvmCliValues, common
   }
   if (running === 0) {
     throw new Error(
-      `aucune source n'a pu démarrer sur ${chain.name}. Fournissez un RPC avec --rpc <url> ou RPC_URL_${envKey} / WS_URL_${envKey}.`,
+      `aucune source n'a pu démarrer sur ${chain.name} (endpoints injoignables). Fournissez un RPC avec --rpc <url> ou RPC_URL_${envKey} / WS_URL_${envKey}.`,
     );
   }
   ui.start();
