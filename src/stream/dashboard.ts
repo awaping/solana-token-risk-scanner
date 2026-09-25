@@ -1,7 +1,9 @@
 /**
  * Tableau de bord du mode stream : classement des tokens actifs (triés par
- * holders, trades, volume, momentum ou capitalisation) avec leur niveau de
- * risque. Les lancements sans activité ne sont jamais affichés.
+ * trades, volume, momentum ou capitalisation) avec leur niveau de risque.
+ * Les lancements sans activité ne sont jamais affichés. Le nombre de holders
+ * est affiché à titre indicatif mais n'intervient ni dans le seuil ni dans le
+ * tri : il se gonfle trop facilement avec des wallets jetables.
  */
 import type { RiskLevel } from '../types.js';
 import { c, colorForScore, fmtNum, fmtPct, padEndVisible, padStartVisible } from '../utils/format.js';
@@ -9,11 +11,10 @@ import { marketMetrics, tradesLastMinute } from './activity.js';
 import type { StreamEngine, TokenState } from './engine.js';
 import type { FastVerdict } from './fast-score.js';
 
-export type SortKey = 'holders' | 'trades' | 'volume' | 'momentum' | 'mcap';
-export const SORT_KEYS: readonly SortKey[] = ['holders', 'trades', 'volume', 'momentum', 'mcap'];
+export type SortKey = 'trades' | 'volume' | 'momentum' | 'mcap';
+export const SORT_KEYS: readonly SortKey[] = ['trades', 'volume', 'momentum', 'mcap'];
 
 export const SORT_LABELS: Record<SortKey, string> = {
-  holders: 'holders',
   trades: 'nombre de trades',
   volume: 'volume',
   momentum: 'trades sur la dernière minute',
@@ -45,8 +46,6 @@ export interface BoardOptions {
 
 const sortValue = (row: BoardRow, key: SortKey): number => {
   switch (key) {
-    case 'holders':
-      return row.holders;
     case 'trades':
       return row.trades;
     case 'volume':
@@ -82,10 +81,11 @@ export function buildBoard(engine: StreamEngine, opts: BoardOptions): BoardRow[]
       ageMs: opts.now - token.detectedAtMs,
     });
   }
-  // Tri principal demandé, puis holders et trades pour départager.
+  // Tri principal demandé, puis trades et volume pour départager.
   const key = opts.sort;
   candidates.sort(
-    (x, y) => sortValue(y as BoardRow, key) - sortValue(x as BoardRow, key) || y.holders - x.holders || y.trades - x.trades,
+    (x, y) =>
+      sortValue(y as BoardRow, key) - sortValue(x as BoardRow, key) || y.trades - x.trades || y.volumeSol - x.volumeSol,
   );
 
   const rows: BoardRow[] = [];
@@ -121,7 +121,7 @@ const COLUMNS: Column[] = [
   { title: '#', width: 2, align: 'right', cell: (_r, i) => String(i + 1) },
   { title: 'Symbole', width: 10, align: 'left', cell: (r) => c.bold((r.token.symbol || '?').slice(0, 10)) },
   { title: 'Âge', width: 5, align: 'right', cell: (r) => fmtAge(r.ageMs) },
-  { title: 'Holders', width: 7, align: 'right', sort: 'holders', cell: (r) => fmtNum(r.holders) },
+  { title: 'Holders', width: 7, align: 'right', cell: (r) => fmtNum(r.holders) },
   { title: 'Trades', width: 6, align: 'right', sort: 'trades', cell: (r) => fmtNum(r.trades) },
   { title: 'A/V', width: 9, align: 'right', cell: (r) => `${c.green(fmtNum(r.buys))}/${c.red(fmtNum(r.sells))}` },
   { title: '1 min', width: 5, align: 'right', sort: 'momentum', cell: (r) => fmtNum(r.momentum) },

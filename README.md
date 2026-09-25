@@ -181,14 +181,14 @@ Extrait de `npm run demo` (scénario simulé) :
 
 ## Mode stream (temps réel)
 
-Le mode stream écoute **en continu** toutes les transactions du programme Pump.fun. Il rend un verdict sur chaque nouveau token **au moment même où sa création est reçue**, puis suit son **activité réelle** : holders, trades, volume, capitalisation. Aucune requête RPC n'est faite sur le chemin critique.
+Le mode stream écoute **en continu** toutes les transactions du programme Pump.fun. Il rend un verdict sur chaque nouveau token **au moment même où sa création est reçue**, puis suit son **activité réelle** : trades, volume, capitalisation. Aucune requête RPC n'est faite sur le chemin critique.
 
-La plupart des lancements Pump.fun n'ont jamais d'acheteur : un verdict VERT signifie seulement « aucune manipulation détectée ». Le tableau de bord n'affiche donc que les tokens **ACTIFS**, qui ont franchi un seuil de holders **et** de trades, triés par activité.
+La plupart des lancements Pump.fun n'ont jamais d'acheteur : un verdict VERT signifie seulement « aucune manipulation détectée ». Le tableau de bord n'affiche donc que les tokens **ACTIFS**, qui ont franchi un seuil de **trades**, triés par activité. Le nombre de holders n'est pas utilisé comme critère : il se gonfle trop facilement en répartissant des achats sur des wallets jetables.
 
 ```bash
-npm run stream                                  # tableau de bord live, trié par holders
-npm run stream -- --sort trades --only vert     # tri par nombre de trades, risque VERT uniquement
-npm run stream -- --min-holders 25 --min-trades 50
+npm run stream                                  # tableau de bord live, trié par nombre de trades
+npm run stream -- --sort volume --only vert     # tri par volume, risque VERT uniquement
+npm run stream -- --min-trades 50               # seuil ACTIF plus strict
 npm run stream -- --all                         # journal de chaque lancement (T0, T1, T2…)
 npm run stream -- --jsonl --phases actif,alerte > actifs.jsonl   # flux JSON pour un bot
 npm run stream -- --webhook https://mon-bot/hook
@@ -202,7 +202,7 @@ npm run bench                                   # mesure de la latence du chemin
 Solana Token Risk Scanner — stream  22:58:03 · en ligne depuis 4m12s · Ctrl+C pour quitter
 412 tx/s · 1 187 lancements · 9 actifs · décision T0 p50 25 µs / p99 205 µs · slot 330000026 · ws:mainnet.helius-rpc.com 48 211
 
-CLASSEMENT PAR HOLDERS — tokens actifs (≥ 10 holders et ≥ 15 trades) · lancements sans activité masqués
+CLASSEMENT PAR NOMBRE DE TRADES — tokens actifs (≥ 15 trades) · lancements sans activité masqués
  #  Symbole     Âge  Holders  Trades       A/V  1 min  Vol SOL  MCap SOL  Courbe  Top10     Dev  Risque      Mint
  1  MOON         4s       21      23      22/1     23     35,2      64,2    46 %   27 %   vendu  ROUGE  100  FbPLZ9KtDKQkapqaWRtXnbqQBykZpvnFEzKFtsX1ABJF
  2  HFROG        4s       20      32      26/6     32     14,9      47,3    31 %   18 %   1,8 %  VERT     0  DS6RXEnn7oAXtTXGXVDT3xNJ9fQxTq3Z5zwkzWwAoaqA
@@ -216,7 +216,7 @@ DERNIERS ÉVÉNEMENTS
 
 | Colonne | Signification |
 |---|---|
-| Holders | Wallets détenant un solde > 0, **exact** : reconstruit à partir de chaque achat et vente depuis le premier bloc |
+| Holders | Wallets détenant un solde > 0, reconstruit à partir des achats et ventes. **Indicatif seulement** : ni seuil ni tri ne l'utilisent |
 | Trades · A/V | Nombre total de trades, dont achats / ventes |
 | 1 min | Trades sur la dernière minute (momentum) |
 | Vol. SOL · MCap SOL | Volume échangé ; capitalisation au prix spot de la bonding curve |
@@ -240,8 +240,8 @@ Le tableau se redessine toutes les 2 s dans un terminal. Si la sortie est rediri
       │                      identiques (wallets clonés), part de supply raflée ─▶ ~0,8 s après
       ├─ T2  enrichissement   historique RPC du créateur (tokens déjà déployés, âge du wallet),
       │                      en arrière-plan ─────────────────────────────▶ quelques secondes
-      ├─ activité            chaque trade met à jour holders, volume, capitalisation, concentration
-      ├─ ACTIF               seuil de holders ET de trades franchi ─▶ le token entre au classement
+      ├─ activité            chaque trade met à jour trades, volume, capitalisation, concentration
+      ├─ ACTIF               seuil de trades franchi ─▶ le token entre au classement
       └─ ALERTE              le dev vend pendant la période de suivi ─────▶ immédiat
 ```
 
@@ -283,8 +283,8 @@ Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transacti
 
 | Option | Description |
 |---|---|
-| `--sort <clé>` | Tri du classement : `holders` (défaut), `trades`, `volume`, `momentum` (trades / min), `mcap` |
-| `--min-holders <n>` / `--min-trades <n>` | Seuil pour qu'un token devienne ACTIF (défaut 10 holders et 15 trades) |
+| `--sort <clé>` | Tri du classement : `trades` (défaut), `volume`, `momentum` (trades / min), `mcap` |
+| `--min-trades <n>` | Seuil pour qu'un token devienne ACTIF (défaut 15 trades) |
 | `--top <n>` | Lignes du classement (défaut 15) |
 | `--only <niveaux>` | Ne garde que ces niveaux de risque : `vert`, `orange`, `rouge` ou une combinaison (`vert,orange`) |
 | `--refresh <s>` | Rafraîchissement du tableau (défaut 2 s, ou 30 s si la sortie n'est pas un terminal) |

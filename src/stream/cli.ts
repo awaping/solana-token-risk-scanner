@@ -40,12 +40,11 @@ ${c.bold('Mode stream')} — détection temps réel des lancements Pump.fun
 ${c.bold('Usage')}
   npm run stream -- [options]
 
-Par défaut, un tableau de bord live classe les tokens ${c.bold('actifs')} (seuil de holders et de trades
-franchi) par activité, avec leur niveau de risque. Les lancements sans activité sont masqués.
+Par défaut, un tableau de bord live classe les tokens ${c.bold('actifs')} (seuil de trades franchi)
+par activité, avec leur niveau de risque. Les lancements sans activité sont masqués.
 
 ${c.bold('Classement')}
-  --sort <clé>          holders (défaut), trades, volume, momentum (trades/min), mcap
-  --min-holders <n>     Holders requis pour qu'un token soit ACTIF (défaut 10)
+  --sort <clé>          trades (défaut), volume, momentum (trades/min), mcap
   --min-trades <n>      Trades requis pour qu'un token soit ACTIF (défaut 15)
   --top <n>             Lignes du classement (défaut 15)
   --only <niveaux>      Ne garde que ces niveaux de risque, ex. "vert" ou "vert,orange"
@@ -242,7 +241,6 @@ export async function runStream(argv: string[]): Promise<number> {
       'grpc-token': { type: 'string' },
       rpc: { type: 'string' },
       sort: { type: 'string' },
-      'min-holders': { type: 'string' },
       'min-trades': { type: 'string' },
       top: { type: 'string' },
       refresh: { type: 'string' },
@@ -278,9 +276,8 @@ export async function runStream(argv: string[]): Promise<number> {
 
   const config: ScannerConfig = configFromEnv();
   if (values.rpc) config.rpcUrl = values.rpc;
-  const sort = (values.sort ?? 'holders').toLowerCase() as SortKey;
+  const sort = (values.sort ?? 'trades').toLowerCase() as SortKey;
   if (!SORT_KEYS.includes(sort)) throw new Error(`--sort invalide : "${values.sort}" (${SORT_KEYS.join(', ')})`);
-  const minHolders = intOption(values['min-holders'], 'min-holders', 10, 1);
   const minTrades = intOption(values['min-trades'], 'min-trades', 15, 1);
   const top = intOption(values.top, 'top', 15, 1);
   const bundleSlots = intOption(values['bundle-slots'], 'bundle-slots', 2, 1);
@@ -317,7 +314,7 @@ export async function runStream(argv: string[]): Promise<number> {
     bundleSlots,
     trackSeconds,
     reputation,
-    activity: { minHolders, minTrades },
+    activity: { minTrades },
     enrich: values['no-enrich']
       ? undefined
       : async (creator, mint) => {
@@ -367,8 +364,8 @@ export async function runStream(argv: string[]): Promise<number> {
 
   /** L'événement est-il retenu pour la sortie courante ? */
   const selected = (event: VerdictEvent): boolean => {
-    // Une vente du dev sur un token qui a des holders s'affiche quel que soit le filtre de risque.
-    const alertOnLiveToken = event.phase === 'ALERTE' && (event.token.active || event.token.activity.holders >= 3);
+    // Une vente du dev sur un token qui a déjà des acheteurs s'affiche quel que soit le filtre de risque.
+    const alertOnLiveToken = event.phase === 'ALERTE' && (event.token.active || event.token.activity.trades >= 3);
     if (mode === 'dashboard') {
       if (event.phase === 'ACTIF') return !only || only.has(event.verdict.level);
       return alertOnLiveToken;
@@ -435,7 +432,7 @@ export async function runStream(argv: string[]): Promise<number> {
     `${c.bold('Solana Token Risk Scanner — mode stream')}\n` +
       c.gray(
         `  sources : ${sources.map((s) => s.name).join(', ')}\n` +
-          `  RPC enrichissement : ${values['no-enrich'] ? 'désactivé' : maskRpcUrl(config.rpcUrl)} · seuil ACTIF ${minHolders} holders / ${minTrades} trades · fenêtre bundle ${bundleSlots} slot(s) · ${loaded} créateurs en cache\n`,
+          `  RPC enrichissement : ${values['no-enrich'] ? 'désactivé' : maskRpcUrl(config.rpcUrl)} · seuil ACTIF ${minTrades} trades · fenêtre bundle ${bundleSlots} slot(s) · ${loaded} créateurs en cache\n`,
       ),
   );
 
@@ -468,7 +465,7 @@ export async function runStream(argv: string[]): Promise<number> {
     const title =
       c.bold(`CLASSEMENT PAR ${SORT_LABELS[sort].toUpperCase()}`) +
       c.gray(
-        ` — tokens actifs (≥ ${minHolders} holders et ≥ ${minTrades} trades)${only ? ` · risque : ${[...only].join(', ')}` : ''} · lancements sans activité masqués`,
+        ` — tokens actifs (≥ ${minTrades} trades)${only ? ` · risque : ${[...only].join(', ')}` : ''} · lancements sans activité masqués`,
       );
     return [
       title,

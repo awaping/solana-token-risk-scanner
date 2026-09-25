@@ -53,7 +53,7 @@ function setup(now = () => Date.now()) {
     bundleSlots: 1,
     trackSeconds: 1_800,
     reputation: new ReputationStore(),
-    activity: { minHolders: 5, minTrades: 6 },
+    activity: { minTrades: 6 },
     inactiveTtlSeconds: 60,
     now,
   });
@@ -68,41 +68,44 @@ function setup(now = () => Date.now()) {
   return { engine, verdicts, send };
 }
 
-test('ACTIF émis une seule fois quand holders ET trades franchissent le seuil', () => {
+test('ACTIF : seul le nombre de trades compte, pas le nombre de holders', () => {
   const { verdicts, send, engine } = setup();
   const mint = key();
+  const trader = key();
   send(createTxLogs({ mint, creator: key(), symbol: 'LIVE' }));
-  for (let i = 0; i < 4; i++) send(tradeTxLogs({ mint, user: key(), sol: BigInt(1 + i) * 100_000_000n, tokens: 1_000_000_000_000n }));
-  assert.equal(verdicts.filter((v) => v.phase === 'ACTIF').length, 0); // 4 holders < 5
-  for (let i = 0; i < 4; i++) send(tradeTxLogs({ mint, user: key(), sol: BigInt(5 + i) * 100_000_000n, tokens: 1_000_000_000_000n }));
+  for (let i = 0; i < 5; i++) send(tradeTxLogs({ mint, user: trader, sol: 100_000_000n, tokens: 1_000_000_000_000n }));
+  assert.equal(verdicts.filter((v) => v.phase === 'ACTIF').length, 0); // 5 trades < 6
+  send(tradeTxLogs({ mint, user: trader, sol: 100_000_000n, tokens: 1_000_000_000_000n }));
   const actif = verdicts.filter((v) => v.phase === 'ACTIF');
   assert.equal(actif.length, 1);
-  assert.ok(actif[0]!.token.activity.holders >= 5);
+  assert.equal(actif[0]!.token.activity.holders, 1); // un seul wallet : actif quand même
+  send(tradeTxLogs({ mint, user: key(), sol: 100_000_000n, tokens: 1_000_000_000_000n }));
+  assert.equal(verdicts.filter((v) => v.phase === 'ACTIF').length, 1); // émis une seule fois
   assert.equal(engine.stats().active, 1);
 });
 
 test('classement : seuls les tokens actifs, triés par la clé demandée', () => {
   const { send, engine } = setup();
-  const make = (symbol: string, buyers: number, extraTrades: number) => {
+  const make = (symbol: string, buyers: number, solPerBuyer: bigint, extraTrades: number) => {
     const mint = key();
     send(createTxLogs({ mint, creator: key(), symbol }));
     const users = Array.from({ length: buyers }, key);
-    for (const u of users) send(tradeTxLogs({ mint, user: u, sol: 200_000_000n, tokens: 1_000_000_000_000n }));
+    for (const u of users) send(tradeTxLogs({ mint, user: u, sol: solPerBuyer, tokens: 1_000_000_000_000n }));
     for (let i = 0; i < extraTrades; i++) send(tradeTxLogs({ mint, user: users[0]!, sol: 100_000_000n, tokens: 1_000_000_000n }));
     return mint;
   };
-  make('MANYHOLD', 20, 0); // 20 holders, 20 trades
-  make('MANYTRADE', 6, 60); // 6 holders, 66 trades
-  make('DEAD', 1, 0); // jamais actif
-  const byHolders = buildBoard(engine, { sort: 'holders', limit: 10, now: Date.now() });
-  assert.deepEqual(byHolders.map((r) => r.token.symbol), ['MANYHOLD', 'MANYTRADE']);
+  make('BIGVOL', 20, 1_000_000_000n, 0); // 20 trades, 20 SOL
+  make('MANYTRADE', 6, 200_000_000n, 60); // 66 trades, 7,2 SOL
+  make('DEAD', 1, 200_000_000n, 0); // 1 trade : jamais actif
   const byTrades = buildBoard(engine, { sort: 'trades', limit: 10, now: Date.now() });
-  assert.deepEqual(byTrades.map((r) => r.token.symbol), ['MANYTRADE', 'MANYHOLD']);
-  const onlyRed = buildBoard(engine, { sort: 'holders', limit: 10, only: new Set(['ROUGE']), now: Date.now() });
+  assert.deepEqual(byTrades.map((r) => r.token.symbol), ['MANYTRADE', 'BIGVOL']);
+  const byVolume = buildBoard(engine, { sort: 'volume', limit: 10, now: Date.now() });
+  assert.deepEqual(byVolume.map((r) => r.token.symbol), ['BIGVOL', 'MANYTRADE']);
+  const onlyRed = buildBoard(engine, { sort: 'trades', limit: 10, only: new Set(['ROUGE']), now: Date.now() });
   assert.equal(onlyRed.length, 0);
-  const lines = renderBoard(byHolders, 'holders');
+  const lines = renderBoard(byTrades, 'trades');
   assert.equal(lines.length, 3);
-  assert.match(lines[1]!, /MANYHOLD/);
+  assert.match(lines[1]!, /MANYTRADE/);
 });
 
 test('concentration réelle : une baleine non-dev fait monter le risque', () => {
@@ -111,7 +114,7 @@ test('concentration réelle : une baleine non-dev fait monter le risque', () => 
   send(createTxLogs({ mint, creator: key(), symbol: 'WHALE' }));
   send(tradeTxLogs({ mint, user: key(), sol: 20_000_000_000n, tokens: 350_000_000_000_000n })); // 35 %
   for (let i = 0; i < 6; i++) send(tradeTxLogs({ mint, user: key(), sol: 100_000_000n, tokens: 2_000_000_000_000n }));
-  const row = buildBoard(engine, { sort: 'holders', limit: 5, now: Date.now() })[0]!;
+  const row = buildBoard(engine, { sort: 'trades', limit: 5, now: Date.now() })[0]!;
   assert.ok(row.top10Pct > 35);
   assert.equal(row.verdict.level, 'ROUGE');
   assert.ok(row.verdict.findings.some((f) => f.message.includes('Un wallet détient')));

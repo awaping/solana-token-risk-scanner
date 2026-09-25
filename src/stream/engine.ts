@@ -8,7 +8,7 @@
  *   T0      verdict immédiat à la création (aucune requête réseau)
  *   T1      verdict après la fenêtre de bundle (N premiers slots)
  *   T2      verdict après enrichissement RPC de l'historique du créateur
- *   ACTIF   le token franchit le seuil d'activité (holders + trades)
+ *   ACTIF   le token franchit le seuil d'activité (nombre de trades)
  *   ALERTE  vente du dev pendant la période de suivi
 
  * L'activité (holders exacts, trades, volume, capitalisation) est reconstruite
@@ -92,8 +92,8 @@ export interface EngineOptions {
   enrich?: (creator: string, mint: string) => Promise<NonNullable<CreatorSnapshot['enrichment']>>;
   /** Retrouve une création dont l'événement manque (logs tronqués). */
   resolveMissingCreate?: (signature: string) => Promise<{ mint: string; creator: string } | null>;
-  /** Seuil de la phase ACTIF (défaut : 10 holders et 15 trades). */
-  activity?: { minHolders: number; minTrades: number };
+  /** Seuil de la phase ACTIF, en nombre de trades (défaut 15). */
+  activity?: { minTrades: number };
   /** Un token jamais devenu actif est oublié après ce délai sans trade (s, défaut 300). */
   inactiveTtlSeconds?: number;
   now?: () => number;
@@ -168,13 +168,11 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
   private readonly now: () => number;
   private tipSlot = 0;
   private counters = { txReceived: 0, txDuplicates: 0, txFailed: 0, creates: 0, trackedTrades: 0, truncatedCreates: 0 };
-  private readonly minHolders: number;
   private readonly minTrades: number;
 
   constructor(private readonly opts: EngineOptions) {
     super();
     this.now = opts.now ?? Date.now;
-    this.minHolders = opts.activity?.minHolders ?? 10;
     this.minTrades = opts.activity?.minTrades ?? 15;
   }
 
@@ -373,7 +371,9 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
     }
 
     const a = token.activity;
-    if (!token.active && a.holders >= this.minHolders && a.trades >= this.minTrades) {
+    // Seul le nombre de trades compte : le nombre de holders se gonfle trop facilement
+    // (achats répartis sur des wallets jetables) pour servir de critère.
+    if (!token.active && a.trades >= this.minTrades) {
       token.active = true;
       this.emitVerdict('ACTIF', token, tx.receivedAt);
     }
