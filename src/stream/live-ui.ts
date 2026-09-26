@@ -7,7 +7,8 @@
  *   jsonl      JSON sur stdout, messages d'état sur stderr (--jsonl)
  */
 import type { RiskLevel } from '../types.js';
-import { c, truncateVisible } from '../utils/format.js';
+import { c, fmtNum, truncateVisible } from '../utils/format.js';
+import { disableQuickEdit, restoreQuickEdit } from '../utils/windows-console.js';
 import { fmtAge, renderBoard, SORT_LABELS, type BoardRow, type SortKey } from './dashboard.js';
 import type { StatusHandler } from './sources/types.js';
 
@@ -45,6 +46,8 @@ export class LiveUi {
   private started = Date.now();
   private refreshTimer?: NodeJS.Timeout;
   private statsTimer?: NodeJS.Timeout;
+  private freezeTimer?: NodeJS.Timeout;
+  private lastBeat = Date.now();
   private drawing = false;
 
   constructor(private readonly opts: LiveUiOptions) {}
@@ -111,6 +114,8 @@ export class LiveUi {
   start(): void {
     this.started = Date.now();
     const { mode, live, refreshS, statsS, top } = this.opts;
+    disableQuickEdit();
+    this.watchFreezes();
     if (mode === 'dashboard' && live) {
       process.stdout.write('\x1b[?25l\x1b[2J');
       this.drawing = true;
@@ -123,10 +128,33 @@ export class LiveUi {
     }
   }
 
+  /**
+   * Détecte les gels du programme : un minuteur d'une seconde qui se réveille
+   * avec plusieurs secondes de retard signifie que plus rien ne s'exécutait
+   * (console Windows en mode sélection, mise en veille de la machine…).
+   */
+  private watchFreezes(): void {
+    this.lastBeat = Date.now();
+    this.freezeTimer = setInterval(() => {
+      const now = Date.now();
+      const gapS = (now - this.lastBeat) / 1000;
+      this.lastBeat = now;
+      if (gapS < 5) return;
+      const hint =
+        process.platform === 'win32'
+          ? ' : un clic dans la fenêtre met la console Windows en pause (Échap pour reprendre)'
+          : ' (mise en veille, terminal suspendu…)';
+      this.log(c.yellow(`${c.gray(clock())} ! programme figé pendant ${fmtNum(gapS, 0)} s${hint} ; le flux reprend`));
+    }, 1_000);
+    this.freezeTimer.unref();
+  }
+
   /** Arrêt : restaure le terminal, affiche le classement final et le résumé. */
   finish(): void {
     clearInterval(this.refreshTimer);
     clearInterval(this.statsTimer);
+    clearInterval(this.freezeTimer);
+    restoreQuickEdit();
     if (this.drawing) process.stdout.write('\x1b[?25h\x1b[2J\x1b[H');
     this.drawing = false;
     if (this.opts.mode === 'dashboard') console.log(['', ...this.boardBlock(this.opts.top), ''].join('\n'));

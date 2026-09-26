@@ -13,6 +13,7 @@ import {
 import { createLimiter, isTransientError } from '../src/rpc/client.js';
 import { describeError } from '../src/scanner.js';
 import { encodeMetaplexMetadata } from './fixtures/encoders.js';
+import { padEndVisible, sanitizeLabel, truncateVisible, visibleLength } from '../src/utils/format.js';
 
 test('maskRpcUrl : masque les clés d’API (query string et chemin)', () => {
   assert.equal(maskRpcUrl('https://mainnet.helius-rpc.com/?api-key=secret123'), 'https://mainnet.helius-rpc.com/?api-key=***');
@@ -81,4 +82,17 @@ test('decodeMetaplexMetadata : nom, symbole et mutabilité', () => {
   assert.equal(meta?.isMutable, true);
   assert.equal(meta?.mint, mint.toBase58());
   assert.equal(decodeMetaplexMetadata(Buffer.alloc(20)), null);
+});
+
+test('largeur terminal : emoji et idéogrammes sur 2 colonnes, caractères invisibles ignorés', () => {
+  assert.equal(visibleLength('ABC'), 3);
+  assert.equal(visibleLength('🐸PEPE'), 6);
+  assert.equal(visibleLength('猫猫'), 4);
+  assert.equal(visibleLength('x​y‮'), 2);
+  assert.equal(visibleLength('\u001b[1mBOLD\u001b[0m'), 4);
+  // Troncature sans couper un emoji en deux (pas de demi-paire de substitution).
+  assert.equal(truncateVisible('🐸🐸🐸', 5), '🐸🐸');
+  assert.equal(truncateVisible('\u001b[1mABCDEF\u001b[0m', 3), '\u001b[1mABC\u001b[0m');
+  assert.equal(padEndVisible('🐸A', 5), '🐸A  ');
+  assert.equal(sanitizeLabel(' Evil‮Coin\u0007 ​'), 'EvilCoin');
 });

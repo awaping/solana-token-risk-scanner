@@ -16,7 +16,18 @@ import { extractInitializedMints, scanCreatorHistory } from '../analyzers/creato
 import { runEvmStream, type EvmCliValues } from '../evm/cli.js';
 import { createLimiter, RpcClient } from '../rpc/client.js';
 import { scanToken } from '../scanner.js';
-import { c, colorForScore, fmtNum, fmtPct, padEndVisible, padStartVisible, setColorEnabled, shortAddr } from '../utils/format.js';
+import {
+  c,
+  colorForScore,
+  fmtNum,
+  fmtPct,
+  padEndVisible,
+  padStartVisible,
+  setColorEnabled,
+  shortAddr,
+  truncateVisible,
+  visibleLength,
+} from '../utils/format.js';
 import { marketMetrics, tradesLastMinute } from './activity.js';
 import {
   intOption,
@@ -72,6 +83,7 @@ ${c.bold('Sources')} (toutes les sources configurées sont mises en course, la p
 ${c.bold('Analyse')}
   --bundle-slots <n>    Solana : slots observés avant le verdict T1 (défaut 2)
   --no-enrich           Solana : pas d'enrichissement RPC de l'historique des créateurs
+  --enrich              Solana : force l'enrichissement sur le RPC public (désactivé par défaut : trop limité)
   --enrich-tx <n>       Solana : transactions inspectées par créateur (défaut 25)
   --deep-scan           Solana : scan complet de chaque token qui devient ACTIF
   --audit-all           EVM : auditer chaque nouvelle pool (défaut : seulement les tokens ACTIFS)
@@ -115,6 +127,10 @@ function printChains(): void {
     ),
   );
 }
+
+/** WebSocket publics Solana, mis en course quand aucun endpoint dédié n'est configuré. */
+const SOLANA_PUBLIC_WS = ['wss://api.mainnet-beta.solana.com', 'wss://solana-rpc.publicnode.com'];
+const isPublicSolanaRpc = (url: string) => /\/\/api\.mainnet-beta\.solana\.com/i.test(url);
 
 const looksLikeAddress = (value: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) || /^0x[0-9a-fA-F]{40}$/.test(value);
 
@@ -199,14 +215,14 @@ function renderVerdict(event: VerdictEvent): string {
     event.previousScore !== undefined && event.previousScore !== verdict.score
       ? c.gray(` (${verdict.score > event.previousScore ? '+' : ''}${verdict.score - event.previousScore})`)
       : '';
-  const symbol = padEndVisible(c.bold((token.symbol || '?').slice(0, 12)), 12);
+  const symbol = padEndVisible(c.bold(truncateVisible(token.symbol || '?', 12)), 12);
   const head = `${c.gray(clock())} ${PHASE_STYLE[phase](padEndVisible(`${PHASE_ICON[phase]} ${phase}`, 8))} ${level} ${score}${delta}  ${symbol}`;
 
   let detail: string;
   if (phase === 'T0') {
     const speed = event.decisionMicros !== undefined ? c.green(`${fmtNum(event.decisionMicros, 0)} µs`) : '';
     const lag = token.lagSlots === 0 ? c.green('+0 slot') : c.yellow(`+${token.lagSlots} slot`);
-    const name = token.name.length > 24 ? `${token.name.slice(0, 23)}…` : token.name;
+    const name = visibleLength(token.name) > 24 ? `${truncateVisible(token.name, 23)}…` : token.name;
     detail = `${name} · ${token.mint} · dev ${shortAddr(token.creator)} · slot ${token.createSlot} ${lag} · décision ${speed}${token.viaRpcFallback ? c.yellow(' (via RPC, logs tronqués)') : ''} ${c.gray(token.source)}`;
   } else if (phase === 'T1' && token.bundle) {
     const b = token.bundle;
@@ -260,6 +276,7 @@ export async function runStream(argv: string[]): Promise<number> {
       'bundle-slots': { type: 'string' },
       track: { type: 'string' },
       'no-enrich': { type: 'boolean', default: false },
+      enrich: { type: 'boolean', default: false },
       'enrich-tx': { type: 'string' },
       'deep-scan': { type: 'boolean', default: false },
       'audit-all': { type: 'boolean', default: false },
@@ -330,6 +347,7 @@ interface SolanaCliValues {
   rpc?: string;
   'bundle-slots'?: string;
   'no-enrich'?: boolean;
+  enrich?: boolean;
   'enrich-tx'?: string;
   'deep-scan'?: boolean;
   'no-warmup'?: boolean;
@@ -344,11 +362,15 @@ async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOpti
 
   // --- Sources ---------------------------------------------------------------
   const programId = PUMP_FUN_PROGRAM_ID.toBase58();
+  const publicRpc = isPublicSolanaRpc(config.rpcUrl);
+  // Sans endpoint dédié : deux WebSocket publics mis en course (si l'un est limité, l'autre continue).
   const wsUrls = values.ws?.length
     ? values.ws
     : process.env.SOLANA_WS_URL
       ? process.env.SOLANA_WS_URL.split(',').map((u) => u.trim()).filter(Boolean)
-      : [httpToWs(config.rpcUrl)];
+      : publicRpc
+        ? SOLANA_PUBLIC_WS
+        : [httpToWs(config.rpcUrl)];
   const sources: TxSource[] = wsUrls.map(
     (url, i) => new WebSocketLogsSource({ url, programId, name: wsUrls.length > 1 ? `ws${i + 1}:${new URL(url).host}` : undefined }),
   );
@@ -359,6 +381,9 @@ async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOpti
 
   // --- RPC (hors chemin critique) -------------------------------------------
   const rpc = new RpcClient({ url: config.rpcUrl, concurrency: config.concurrency, maxRetries: 2 });
+  // Le RPC public (≈ 100 requêtes / 10 s par IP) ne suit pas ~26 requêtes par lancement, et ses
+  // refus (429) peuvent aussi brider le WebSocket de la même IP : enrichissement désactivé par défaut.
+  const enrichEnabled = !values['no-enrich'] && (!publicRpc || Boolean(values.enrich));
   const reputation = new ReputationStore(common.cache ?? '.cache/creators.json');
   const loaded = reputation.load();
 
@@ -367,7 +392,7 @@ async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOpti
     trackSeconds: common.trackSeconds,
     reputation,
     activity: { minTrades },
-    enrich: values['no-enrich']
+    enrich: !enrichEnabled
       ? undefined
       : async (creator, mint) => {
           const history = await scanCreatorHistory(rpc, new PublicKey(creator), enrichTx);
@@ -401,6 +426,7 @@ async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOpti
   let started = Date.now();
   let lastTx = 0;
   let lastTick = Date.now();
+  let lastRxAt = Date.now();
   const ui = new LiveUi({
     ...common,
     title: 'Token Risk Scanner — stream Solana (Pump.fun)',
@@ -408,10 +434,18 @@ async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOpti
       const now = Date.now();
       const st = engine.stats();
       const txRate = (st.txReceived - lastTx) / Math.max(0.001, (now - lastTick) / 1000);
+      if (st.txReceived > lastTx) lastRxAt = now;
       lastTx = st.txReceived;
       lastTick = now;
       const sourcesText = sourcesSummary(st);
+      // Le flux Pump.fun n'est jamais silencieux : au-delà de 10 s sans transaction, la source est en panne.
+      const silentS = (now - lastRxAt) / 1000;
+      const stall =
+        silentS >= 10
+          ? c.red(c.bold(`⚠ aucune transaction depuis ${fmtAge(now - lastRxAt)} : reconnexion en cours${publicRpc ? ' (RPC public limité ?)' : ''}`)) + ' · '
+          : '';
       return (
+        stall +
         c.gray(`${fmtNum(txRate, 0)} tx/s · ${fmtNum(st.creates)} lancements · `) +
         c.bold(`${fmtNum(st.active)} actifs`) +
         c.gray(` · décision T0 p50 ${fmtNum(st.latency.p50, 0)} µs / p99 ${fmtNum(st.latency.p99, 0)} µs · slot ${st.tipSlot}${sourcesText ? ` · ${sourcesText}` : ''}`)
@@ -452,7 +486,7 @@ async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOpti
               .map((f) => f.message)
               .slice(0, 3);
             ui.log(
-              `${c.gray(clock())} ${c.bold(padEndVisible('◎ SCAN', 8))} ${color(c.bold(padEndVisible(result.risk.level, 6)))} ${color(padStartVisible(String(result.risk.score), 3))}  ${padEndVisible(c.bold(symbol.slice(0, 12)), 12)} scan complet${alerts.length ? ` — ${alerts.join(' · ')}` : ' — aucun indicateur critique'}`,
+              `${c.gray(clock())} ${c.bold(padEndVisible('◎ SCAN', 8))} ${color(c.bold(padEndVisible(result.risk.level, 6)))} ${color(padStartVisible(String(result.risk.score), 3))}  ${padEndVisible(c.bold(truncateVisible(symbol, 12)), 12)} scan complet${alerts.length ? ` — ${alerts.join(' · ')}` : ' — aucun indicateur critique'}`,
             );
           })
           .catch((error: unknown) =>
@@ -468,7 +502,10 @@ async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOpti
     `${c.bold('Token Risk Scanner — mode stream · Solana (Pump.fun)')}\n` +
       c.gray(
         `  sources : ${sources.map((s) => s.name).join(', ')}\n` +
-          `  RPC enrichissement : ${values['no-enrich'] ? 'désactivé' : maskRpcUrl(config.rpcUrl)} · seuil ACTIF ${minTrades} trades · fenêtre bundle ${bundleSlots} slot(s) · ${loaded} créateurs en cache\n`,
+          `  RPC enrichissement : ${enrichEnabled ? maskRpcUrl(config.rpcUrl) : values['no-enrich'] ? 'désactivé' : 'désactivé sur le RPC public (trop limité ; --enrich pour forcer)'} · seuil ACTIF ${minTrades} trades · fenêtre bundle ${bundleSlots} slot(s) · ${loaded} créateurs en cache\n` +
+          (publicRpc && !values.ws?.length && !process.env.SOLANA_WS_URL
+            ? `  endpoints publics gratuits (limités) : pour un flux stable, SOLANA_RPC_URL=<RPC dédié, ex. Helius gratuit> dans .env\n`
+            : ''),
       ),
   );
 
@@ -484,6 +521,7 @@ async function runSolanaStream(values: SolanaCliValues, common: CommonStreamOpti
 
   engine.start();
   started = Date.now();
+  lastRxAt = Date.now();
   let running = 0;
   for (const source of sources) {
     try {

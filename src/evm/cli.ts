@@ -9,7 +9,7 @@ import { createPublicClient, fallback, http, webSocket, type PublicClient } from
 import { MAX_PUBLIC_WS, publicEndpoints } from '../chains/endpoints.js';
 import type { EvmChain } from '../chains/registry.js';
 import { maskRpcUrl } from '../config.js';
-import { c, colorForScore, fmtNum, padEndVisible, padStartVisible, shortAddr } from '../utils/format.js';
+import { c, colorForScore, fmtNum, padEndVisible, padStartVisible, shortAddr, truncateVisible, visibleLength } from '../utils/format.js';
 import { jsonReplacer, PHASE_ICON, PHASE_STYLE, postWebhook, renderFindings, type CommonStreamOptions } from '../stream/cli-common.js';
 import { buildEvmBoard, fmtAge } from '../stream/dashboard.js';
 import { clock, LiveUi } from '../stream/live-ui.js';
@@ -114,7 +114,7 @@ function renderEvmVerdict(chain: EvmChain, event: EvmVerdictEvent): string {
     a && event.previousScore !== undefined && event.previousScore !== verdict.score && phase !== 'T1'
       ? c.gray(` (${verdict.score > event.previousScore ? '+' : ''}${verdict.score - event.previousScore})`)
       : '';
-  const symbol = padEndVisible(c.bold((a?.symbol ?? '?').slice(0, 12)), 12);
+  const symbol = padEndVisible(c.bold(truncateVisible(a?.symbol ?? '?', 12)), 12);
   const head = `${c.gray(clock())} ${PHASE_STYLE[phase](padEndVisible(`${PHASE_ICON[phase]} ${phase}`, 8))} ${risk}${delta}  ${symbol}`;
   const unit = quoteSymbol(chain, token);
 
@@ -123,7 +123,7 @@ function renderEvmVerdict(chain: EvmChain, event: EvmVerdictEvent): string {
     const speed = event.decisionMicros !== undefined ? ` · décision ${c.green(`${fmtNum(event.decisionMicros, 0)} µs`)}` : '';
     detail = `${token.address} · nouvelle pool ${token.dexName} cotée en ${unit} · bloc ${token.creationBlock}${speed} ${c.gray(token.source)}`;
   } else if (phase === 'T1') {
-    const name = a?.name ? `${a.name.length > 24 ? `${a.name.slice(0, 23)}…` : a.name} · ` : '';
+    const name = a?.name ? `${visibleLength(a.name) > 24 ? `${truncateVisible(a.name, 23)}…` : a.name} · ` : '';
     const liquidity = token.liquidity ?? a?.liquidityQuote;
     detail = `${name}${token.address} · audit du contrat${liquidity !== undefined ? ` · liquidité ${fmtNum(liquidity, liquidity < 10 ? 3 : 1)} ${unit}` : ''}`;
   } else if (phase === 'ACTIF') {

@@ -33,6 +33,7 @@ import {
 import { applyTrade, concentration, newActivity, type ActivityState, type Concentration } from './activity.js';
 import type { ReputationStore } from './reputation.js';
 import type { StreamTx } from './sources/types.js';
+import { sanitizeLabel } from '../utils/format.js';
 
 export type Phase = 'T0' | 'T1' | 'T2' | 'ACTIF' | 'ALERTE';
 
@@ -103,6 +104,11 @@ const SLOT_MS = 400;
 const ORPHAN_TTL_MS = 3_000;
 const COPYCAT_WINDOW_MS = 30 * 60_000;
 const RACE_CAPACITY = 50_000;
+/** Pause de l'enrichissement quand le RPC renvoie 429 (protège le flux, qui passe par la même IP). */
+const ENRICH_PAUSE_MS = 60_000;
+/** Enrichissements en cours au maximum : au-delà, les nouveaux créateurs sont ignorés. */
+const ENRICH_MAX_PENDING = 8;
+const RATE_LIMITED = /\b429\b|too many requests|rate.?limit/i;
 const LATENCY_SAMPLES = 4096;
 
 /** Déduplication multi-sources : la première source à livrer une signature gagne. */
@@ -162,6 +168,9 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
   private readonly orphans = new Map<string, { at: number; items: Array<{ event: TradeEvent; tx: StreamTx }> }>();
   private readonly recentSymbols = new Map<string, { mint: string; at: number }>();
   private readonly enriching = new Set<string>();
+  private enrichPausedUntil = 0;
+  private enrichErrors = 0;
+  private enrichErrorReportedAt = Number.NEGATIVE_INFINITY;
   private readonly latencies = new Float64Array(LATENCY_SAMPLES);
   private latencyCount = 0;
   private cleanupTimer?: NodeJS.Timeout;
@@ -290,7 +299,10 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
       if (e.kind === 'trade' && e.mint === event.mint && e.isBuy && devWallets.has(e.user)) devBuyTokens += e.tokenAmount;
     }
 
-    const symbolKey = event.symbol.trim().toUpperCase();
+    // Nom et symbole choisis par le créateur : nettoyés avant tout affichage.
+    const name = sanitizeLabel(event.name);
+    const symbol = sanitizeLabel(event.symbol);
+    const symbolKey = symbol.toUpperCase();
     const previous = symbolKey ? this.recentSymbols.get(symbolKey) : undefined;
     const copycatOf = previous && previous.mint !== event.mint && now - previous.at < COPYCAT_WINDOW_MS ? previous.mint : undefined;
     if (symbolKey) this.recentSymbols.set(symbolKey, { mint: event.mint, at: now });
@@ -298,8 +310,8 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
     const token: TokenState = {
       mint: event.mint,
       mintKey: event.mintKey,
-      name: event.name,
-      symbol: event.symbol,
+      name,
+      symbol,
       uri: event.uri,
       creator: event.creator,
       bondingCurve: event.bondingCurve,
@@ -410,7 +422,8 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
 
   private maybeEnrich(creator: string, mint: string): void {
     const { enrich, reputation } = this.opts;
-    if (!enrich || this.enriching.has(creator) || !reputation.needsEnrichment(creator, this.now())) return;
+    if (!enrich || this.enriching.has(creator) || this.enriching.size >= ENRICH_MAX_PENDING) return;
+    if (this.now() < this.enrichPausedUntil || !reputation.needsEnrichment(creator, this.now())) return;
     this.enriching.add(creator);
     enrich(creator, mint)
       .then((data) => {
@@ -420,7 +433,22 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
         }
       })
       .catch((error: unknown) => {
-        this.emit('status', `enrichissement ${creator.slice(0, 6)}… impossible : ${error instanceof Error ? error.message : String(error)}`, 'warn');
+        const message = error instanceof Error ? error.message : String(error);
+        const now = this.now();
+        if (RATE_LIMITED.test(message)) {
+          if (now >= this.enrichPausedUntil) {
+            this.emit('status', `RPC saturé (429) : enrichissement des créateurs suspendu ${ENRICH_PAUSE_MS / 1000} s pour préserver le flux`, 'warn');
+          }
+          this.enrichPausedUntil = now + ENRICH_PAUSE_MS;
+          return;
+        }
+        // Autres erreurs : regroupées, au plus un message par minute.
+        this.enrichErrors++;
+        if (now - this.enrichErrorReportedAt >= 60_000) {
+          this.emit('status', `enrichissement impossible (${this.enrichErrors} échec${this.enrichErrors > 1 ? 's' : ''}) : ${message.slice(0, 120)}`, 'warn');
+          this.enrichErrors = 0;
+          this.enrichErrorReportedAt = now;
+        }
       })
       .finally(() => this.enriching.delete(creator));
   }

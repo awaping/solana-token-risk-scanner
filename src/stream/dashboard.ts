@@ -9,7 +9,7 @@
  * jetables).
  */
 import type { RiskLevel } from '../types.js';
-import { c, colorForScore, fmtNum, fmtPct, padEndVisible, padStartVisible } from '../utils/format.js';
+import { c, colorForScore, fmtNum, fmtPct, padEndVisible, padStartVisible, truncateVisible } from '../utils/format.js';
 import { evmPrice, evmTradesLastMinute, type EvmStreamEngine } from '../evm/engine.js';
 import { marketMetrics, tradesLastMinute } from './activity.js';
 import type { StreamEngine } from './engine.js';
@@ -210,7 +210,7 @@ interface Column {
 
 const COLUMNS: Column[] = [
   { title: '#', width: 2, align: 'right', cell: (_r, i) => String(i + 1) },
-  { title: 'Symbole', width: 10, align: 'left', cell: (r) => c.bold(r.symbol.slice(0, 10)) },
+  { title: 'Symbole', width: 10, align: 'left', cell: (r) => c.bold(truncateVisible(r.symbol, 10)) },
   { title: 'Âge', width: 5, align: 'right', cell: (r) => fmtAge(r.ageMs) },
   { title: 'Trades', width: 6, align: 'right', sort: 'trades', cell: (r) => fmtNum(r.trades) },
   { title: 'A/V', width: 9, align: 'right', cell: (r) => `${c.green(fmtNum(r.buys))}/${c.red(fmtNum(r.sells))}` },

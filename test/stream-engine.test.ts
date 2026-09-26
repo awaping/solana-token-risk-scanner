@@ -150,6 +150,33 @@ test('T2 : enrichissement asynchrone du créateur', async () => {
   assert.ok(t2.verdict.findings.some((f) => f.message.includes('12 autres tokens')));
 });
 
+test('RPC saturé (429) : enrichissement suspendu, un seul message, flux intact', async () => {
+  let calls = 0;
+  const { engine, verdicts, send } = setup({
+    enrich: async () => {
+      calls++;
+      throw new Error('429 Too Many Requests: {"error":{"code":429}}');
+    },
+  });
+  const statuses: string[] = [];
+  engine.on('status', (message) => statuses.push(message));
+  send(createTxLogs({ mint: key(), creator: key() }), 1000);
+  await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 5; i++) send(createTxLogs({ mint: key(), creator: key() }), 1001 + i);
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(calls, 1, 'plus aucune requête pendant la pause');
+  assert.equal(statuses.filter((m) => m.includes('suspendu')).length, 1);
+  assert.equal(verdicts.filter((v) => v.phase === 'T0').length, 6, 'les lancements continuent d’être analysés');
+});
+
+test('nom et symbole nettoyés : caractères de contrôle et inversion de sens retirés', () => {
+  const { verdicts, send } = setup();
+  send(createTxLogs({ mint: key(), creator: key(), name: 'Evil\u202eCoin\u0007', symbol: '\u200bPE\u001b[31mPE' }), 100);
+  assert.equal(verdicts[0]!.token.name, 'EvilCoin');
+  assert.equal(verdicts[0]!.token.symbol, 'PE[31mPE');
+});
+
 test('logs tronqués : création retrouvée via le RPC', async () => {
   const mint = key();
   const creator = key();

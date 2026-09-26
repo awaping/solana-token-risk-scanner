@@ -82,8 +82,47 @@ export function colorForScore(score: number): (text: string | number) => string 
   return c.green;
 }
 
-/** Longueur visible d'une chaîne (sans les séquences ANSI). */
-export const visibleLength = (text: string): number => text.replace(/\u001b\[[0-9;]*m/g, '').length;
+/**
+ * Largeur d'un caractère dans un terminal : 0 (contrôle, marque combinante,
+ * caractère invisible), 2 (idéogrammes CJK, emoji) ou 1.
+ */
+function charWidth(cp: number): number {
+  if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return 0;
+  if (
+    (cp >= 0x300 && cp <= 0x36f) ||
+    (cp >= 0x200b && cp <= 0x200f) ||
+    (cp >= 0x202a && cp <= 0x202e) ||
+    (cp >= 0x2060 && cp <= 0x206f) ||
+    (cp >= 0xfe00 && cp <= 0xfe0f) ||
+    cp === 0xfeff ||
+    (cp >= 0x1f3fb && cp <= 0x1f3ff) ||
+    (cp >= 0xe0000 && cp <= 0xe01ef)
+  ) {
+    return 0;
+  }
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe4f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    cp >= 0x1f000
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+const ANSI = /\u001b\[[0-9;]*m/g;
+
+/** Largeur visible d'une chaîne dans un terminal (sans les séquences ANSI, emoji = 2 colonnes). */
+export function visibleLength(text: string): number {
+  let width = 0;
+  for (const ch of text.replace(ANSI, '')) width += charWidth(ch.codePointAt(0)!);
+  return width;
+}
 
 export const padEndVisible = (text: string, width: number): string =>
   text + ' '.repeat(Math.max(0, width - visibleLength(text)));
@@ -91,22 +130,43 @@ export const padEndVisible = (text: string, width: number): string =>
 export const padStartVisible = (text: string, width: number): string =>
   ' '.repeat(Math.max(0, width - visibleLength(text))) + text;
 
-/** Tronque une chaîne à `width` caractères visibles en préservant les séquences ANSI. */
+/** Tronque une chaîne à `width` colonnes visibles en préservant les séquences ANSI. */
 export function truncateVisible(text: string, width: number): string {
   let visible = 0;
   let out = '';
-  for (let i = 0; i < text.length; i++) {
+  let full = false;
+  for (let i = 0; i < text.length; ) {
     if (text[i] === '\u001b') {
       const end = text.indexOf('m', i);
       if (end !== -1) {
         out += text.slice(i, end + 1);
-        i = end;
+        i = end + 1;
         continue;
       }
     }
-    if (visible >= width) continue;
-    out += text[i];
-    visible++;
+    const cp = text.codePointAt(i)!;
+    const ch = String.fromCodePoint(cp);
+    i += ch.length;
+    if (full) continue;
+    const w = charWidth(cp);
+    if (visible + w > width) {
+      full = true;
+      continue;
+    }
+    out += ch;
+    visible += w;
   }
   return out;
+}
+
+/**
+ * Nettoie un nom ou un symbole de token choisi par son créateur : caractères
+ * de contrôle, inversions de sens d'écriture (U+202E…) et caractères invisibles
+ * peuvent décaler ou maquiller l'affichage du terminal.
+ */
+export function sanitizeLabel(text: string): string {
+  return text
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

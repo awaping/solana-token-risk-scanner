@@ -82,6 +82,8 @@ export class WebSocketLogsSource implements TxSource {
   private ws?: WebSocket;
   private stopped = false;
   private backoffMs = 250;
+  private receiving = false;
+  private lastError = '';
   private pingTimer?: NodeJS.Timeout;
   private idleTimer?: NodeJS.Timeout;
   private awaitingPong = false;
@@ -94,7 +96,7 @@ export class WebSocketLogsSource implements TxSource {
       programId: options.programId,
       commitment: options.commitment ?? 'processed',
       pingIntervalMs: options.pingIntervalMs ?? 15_000,
-      idleTimeoutMs: options.idleTimeoutMs ?? 30_000,
+      idleTimeoutMs: options.idleTimeoutMs ?? 20_000,
     };
   }
 
@@ -117,9 +119,16 @@ export class WebSocketLogsSource implements TxSource {
   private armIdleWatchdog(onStatus: StatusHandler) {
     clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
-      onStatus(this.name, `aucune donnée depuis ${this.opts.idleTimeoutMs / 1000} s, reconnexion`, 'warn');
+      this.report(onStatus, `aucune donnée depuis ${this.opts.idleTimeoutMs / 1000} s (endpoint saturé ou limité ?), reconnexion`);
       this.ws?.terminate();
     }, this.opts.idleTimeoutMs);
+  }
+
+  /** Signale un problème une seule fois tant qu'il se répète (endpoint refusé, limité…). */
+  private report(onStatus: StatusHandler, message: string) {
+    if (message === this.lastError) return;
+    this.lastError = message;
+    onStatus(this.name, message, 'warn');
   }
 
   private connect(onTx: TxHandler, onStatus: StatusHandler) {
@@ -160,24 +169,32 @@ export class WebSocketLogsSource implements TxSource {
       if (result === null) return;
       if (typeof result === 'string') {
         if (result === 'subscribed') onStatus(this.name, 'abonné aux logs Pump.fun (processed)', 'info');
-        else onStatus(this.name, `abonnement refusé : ${result}`, 'warn');
+        else this.report(onStatus, `abonnement refusé : ${result}`);
         return;
       }
       this.armIdleWatchdog(onStatus);
-      this.backoffMs = 250;
+      if (!this.receiving) {
+        if (this.lastError) onStatus(this.name, 'flux rétabli', 'info');
+        this.receiving = true;
+        this.lastError = '';
+        this.backoffMs = 250;
+      }
       onTx(result);
     });
 
-    ws.on('error', (error: Error) => {
-      onStatus(this.name, `erreur : ${error.message}`, 'warn');
-    });
+    ws.on('error', (error: Error) => this.report(onStatus, `erreur : ${error.message}`));
 
     ws.on('close', () => {
       this.clearTimers();
+      const wasReceiving = this.receiving;
+      this.receiving = false;
       if (this.stopped) return;
+      // Coupure après un flux normal : reconnexion immédiate. Endpoint qui refuse
+      // ou ne livre rien : les tentatives s'espacent jusqu'à 30 s.
+      if (wasReceiving) this.backoffMs = 250;
       const delay = this.backoffMs;
-      this.backoffMs = Math.min(this.backoffMs * 2, 5_000);
-      onStatus(this.name, `connexion fermée, nouvelle tentative dans ${delay} ms`, 'warn');
+      this.backoffMs = Math.min(this.backoffMs * 2, 30_000);
+      if (wasReceiving) onStatus(this.name, `connexion fermée, nouvelle tentative dans ${delay} ms`, 'warn');
       setTimeout(() => this.connect(onTx, onStatus), delay);
     });
   }

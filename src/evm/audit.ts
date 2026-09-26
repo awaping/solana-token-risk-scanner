@@ -14,6 +14,7 @@
 import { parseAbi, toFunctionSelector, type Address, type Hex, type PublicClient } from 'viem';
 import type { EvmChain } from '../chains/registry.js';
 import { ZERO_ADDRESS, type PoolCreated } from './events.js';
+import { sanitizeLabel } from '../utils/format.js';
 
 export const DEAD_ADDRESS = '0x000000000000000000000000000000000000dead';
 
@@ -216,8 +217,8 @@ export async function auditToken(client: PublicClient, chain: EvmChain, input: A
 
   const supply = typeof totalSupply === 'bigint' ? totalSupply : 0n;
   const audit: EvmTokenAudit = {
-    name: typeof name === 'string' ? name : undefined,
-    symbol: typeof symbol === 'string' ? symbol : undefined,
+    name: typeof name === 'string' ? sanitizeLabel(name) : undefined,
+    symbol: typeof symbol === 'string' ? sanitizeLabel(symbol) : undefined,
     decimals: typeof decimals === 'number' ? decimals : 18,
     totalSupply: supply,
     owner: ownerAddress,

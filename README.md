@@ -131,11 +131,12 @@ npm run demo -- raydium   # pool Raydium + mint authority active
 | `CREATOR_TX_SCAN_LIMIT` | `100` | Transactions du créateur inspectées |
 | `MINT_HISTORY_MAX_PAGES` | `5` | Pages de 1 000 signatures parcourues pour retrouver la création du mint |
 | `HOLDER_CENSUS` | `true` | Active le recensement complet des holders |
-| `SOLANA_WS_URL` | dérivé de `SOLANA_RPC_URL` | Mode stream : endpoint(s) WebSocket, séparés par des virgules |
+| `SOLANA_WS_URL` | dérivé de `SOLANA_RPC_URL` (RPC public : 2 WebSocket publics en course) | Mode stream : endpoint(s) WebSocket, séparés par des virgules |
 | `YELLOWSTONE_GRPC_URL` / `YELLOWSTONE_GRPC_TOKEN` | — | Mode stream : source gRPC Geyser (optionnelle) |
 | `STREAM_CHAIN` | `solana` | Mode stream : blockchain utilisée quand aucune n'est donnée en argument |
 | `RPC_URL_<CHAÎNE>` | RPC publics intégrés | Mode stream EVM : RPC HTTP, ex. `RPC_URL_BASE`, `RPC_URL_ROBINHOOD` |
 | `WS_URL_<CHAÎNE>` | WebSocket publics intégrés | Mode stream EVM : endpoint(s) WebSocket séparés par des virgules, ex. `WS_URL_BSC` |
+| `SOL_RISK_KEEP_QUICKEDIT` | — | Windows : `1` pour ne pas désactiver l'édition rapide de la console pendant le mode stream |
 
 ### Compilation
 
@@ -294,6 +295,24 @@ Le tableau se redessine toutes les 2 s dans un terminal. Si la sortie est rediri
 
 Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transactions) : **~20 µs** par transaction et **~100 µs** (p50) de la réception d'une création au verdict T0, soit une capacité de plus de 20 000 tx/s sur un seul cœur. Le flux Pump.fun réel en compte quelques centaines par seconde. En production, la commande affiche ses propres percentiles toutes les 30 s.
 
+### Le tableau de bord ne bouge plus
+
+Trois causes possibles, que l'outil signale désormais lui-même :
+
+| Ce que vous voyez | Cause | Solution |
+|---|---|---|
+| L'heure et « en ligne depuis » sont figées | **Console Windows en mode sélection** : un simple clic dans la fenêtre suspend le programme | Appuyez sur Échap. L'outil désactive l'édition rapide de la console pendant le stream et la rétablit à l'arrêt ; au réveil, il affiche « programme figé pendant N s » |
+| L'heure avance, mais `⚠ aucune transaction depuis…` en rouge et 0 tx/s | **Flux coupé ou bridé** par l'endpoint (le RPC public Solana limite débit et connexions par IP) | L'outil se reconnecte seul, et deux WebSocket publics sont mis en course. Pour un flux stable : RPC dédié (Helius gratuit) dans `SOLANA_RPC_URL` |
+| `RPC saturé (429) : enrichissement suspendu` | Trop de requêtes d'historique des créateurs pour le RPC | Enrichissement mis en pause 60 s automatiquement. Sur le RPC public, il est désactivé par défaut (`--enrich` pour le forcer) |
+
+Le flux Pump.fun dépasse les 600 transactions par seconde, et le RPC public (`api.mainnet-beta.solana.com`) le supporte mal dans la durée. Une clé gratuite [Helius](https://www.helius.dev) règle la question :
+
+```bash
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=VOTRE_CLE
+```
+
+Le WebSocket est alors dérivé automatiquement (`wss://mainnet.helius-rpc.com/?api-key=…`) et l'enrichissement des créateurs est réactivé.
+
 ### Aller encore plus vite
 
 À ce niveau, le calcul local (des microsecondes) est négligeable : **c'est le réseau qui décide** (quelques millisecondes à plusieurs dizaines de millisecondes par saut, un slot Solana ≈ 400 ms).
@@ -320,6 +339,7 @@ Mesures `npm run bench` (Node 22, machine virtuelle partagée, 300 000 transacti
 | `--bundle-slots <n>` | Solana : slots observés avant le verdict T1 (défaut 2 : création + slot suivant) |
 | `--track <s>` | Durée maximale de suivi d'un token (défaut 1800 s). Un lancement jamais actif est oublié après 5 min sans trade |
 | `--no-enrich` / `--enrich-tx <n>` | Solana : désactive / dimensionne l'enrichissement RPC des créateurs (défaut 25 tx) |
+| `--enrich` | Solana : force l'enrichissement sur le RPC public, où il est désactivé par défaut (voir [dépannage](#le-tableau-de-bord-ne-bouge-plus)) |
 | `--deep-scan` | Solana : lance le scan complet (holders, réserve, créateur…) de chaque token qui devient ACTIF (hors ROUGE) |
 | `--poll-ms <ms>` | EVM : intervalle d'interrogation `eth_getLogs` du relais HTTP (défaut : temps de bloc, entre 250 ms et 2 s) |
 | `--audit-all` | EVM : audite chaque nouvelle pool dès sa création (défaut : seulement les tokens ACTIFS, pour économiser le RPC) |
@@ -571,7 +591,7 @@ src/
 │   ├── warmup.ts         # Préchauffage JIT du chemin critique
 │   ├── synthetic.ts      # Transactions synthétiques (préchauffage, tests, démo, bench)
 │   └── sources/          # WebSocket (logsSubscribe) et Yellowstone gRPC
-└── utils/                # BigNumber (stats), formatage FR, couleurs ANSI
+└── utils/                # BigNumber (stats), formatage FR (largeur emoji), couleurs ANSI, console Windows
 test/                     # Tests unitaires + bout en bout sur nœuds simulés (Solana et EVM)
 scripts/                  # demo.ts, demo-stream.ts, demo-stream-evm.ts (démos hors-ligne), bench.ts (latence)
 ```
@@ -590,7 +610,7 @@ token ──┬── holders ──┬── clustering
 
 ## Choisir un endpoint RPC
 
-L'endpoint public `api.mainnet-beta.solana.com` est **fortement limité** (≈ 100 requêtes / 10 s par IP) et refuse souvent les `getProgramAccounts` lourds. Le scanner fonctionne quand même : retries automatiques, et modules indisponibles signalés avec un indice de confiance réduit. Pour une analyse **complète et rapide**, utilisez un RPC dédié : Helius, Triton, QuickNode, Alchemy… Les offres gratuites suffisent généralement.
+L'endpoint public `api.mainnet-beta.solana.com` est **fortement limité** (≈ 100 requêtes / 10 s par IP, volume de données plafonné) et refuse souvent les `getProgramAccounts` lourds. En mode stream, il est doublé d'un second WebSocket public (`solana-rpc.publicnode.com`) et l'enrichissement des créateurs y est désactivé, pour ne pas faire brider le flux (voir [dépannage](#le-tableau-de-bord-ne-bouge-plus)). Le scanner fonctionne quand même : retries automatiques, et modules indisponibles signalés avec un indice de confiance réduit. Pour une analyse **complète et rapide**, utilisez un RPC dédié : Helius, Triton, QuickNode, Alchemy… Les offres gratuites suffisent généralement.
 
 Sur les chaînes EVM, le mode stream fonctionne sans configuration grâce aux endpoints publics intégrés, mais ils sont limités en débit. Pour un usage continu, déclarez un endpoint dédié par chaîne dans `.env` : `RPC_URL_BASE=…`, `WS_URL_BASE=wss://…`. La clé de la chaîne est en majuscules : `RPC_URL_ROBINHOOD`, `WS_URL_BSC`… Voir [où trouver de meilleurs endpoints](#où-trouver-de-meilleurs-endpoints).
 
