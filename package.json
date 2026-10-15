@@ -27,10 +27,11 @@
     "typecheck": "tsc --noEmit && tsc -p extension/tsconfig.json",
     "test": "node --import tsx --test test/*.test.ts",
     "update": "tsx src/index.ts update",
-    "build:ext": "node extension/build.mjs",
+    "build:ext": "node extension/build.mjs && node extension/validate.mjs",
     "watch:ext": "node extension/build.mjs --watch",
     "typecheck:ext": "tsc -p extension/tsconfig.json",
-    "smoke:ext": "node extension/smoke.mjs"
+    "smoke:ext": "node extension/smoke.mjs",
+    "validate:ext": "node extension/validate.mjs"
   },
   "keywords": [
     "solana",

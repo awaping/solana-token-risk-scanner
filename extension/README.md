@@ -18,6 +18,30 @@ privé** (Helius, Triton, QuickNode). L'endpoint public est limité en débit et
 rendra la plupart des analyses incomplètes. La clé reste dans ce navigateur,
 elle n'est envoyée nulle part ailleurs.
 
+### Si Chrome refuse le dossier
+
+```bash
+npm run validate:ext
+```
+
+Le script dit précisément quel fichier manque — Chrome, lui, se contente de
+« Manifest file is missing or unreadable » sans préciser lequel. Les trois
+causes habituelles :
+
+| Message de Chrome | Cause |
+|---|---|
+| Manifest file is missing or unreadable | mauvais dossier sélectionné : il faut `extension/`, pas la racine du dépôt |
+| Could not load javascript 'dist/…' | `dist/` absent — `npm run build:ext` |
+| This extension requires a newer version | Chrome < 120, voir `chrome://version` |
+
+### Reconstruire après modification
+
+```bash
+npm run build:ext
+```
+
+puis recharger l'extension dans `chrome://extensions`.
+
 ## Sites couverts
 
 pump.fun · Padre · Axiom · GMGN · Birdeye · Solscan · BullX · DexScreener ·

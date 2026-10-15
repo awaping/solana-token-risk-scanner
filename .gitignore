@@ -1,5 +1,9 @@
 node_modules/
-dist/
+# Sortie de compilation du CLI, à la racine uniquement.
+/dist/
+# extension/dist/ est VERSIONNÉ à dessein : une extension se charge telle
+# quelle dans Chrome, sans étape de build. L'exclure obligerait quiconque
+# télécharge le dépôt à installer Node avant de pouvoir simplement la charger.
 .env
 *.log
 coverage/
