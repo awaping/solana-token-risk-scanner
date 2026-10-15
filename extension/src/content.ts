@@ -19,8 +19,14 @@ interface Finding {
   severity: 'critical' | 'warning' | 'info' | 'ok';
   message: string;
 }
+interface ScanModule {
+  label: string;
+  score: number | null;
+  findings: Finding[];
+  unavailableReason?: string;
+}
 interface ScanLike {
-  risk: { score: number; level: 'VERT' | 'ORANGE' | 'ROUGE'; modules: Array<{ findings: Finding[] }> };
+  risk: { score: number; level: 'VERT' | 'ORANGE' | 'ROUGE'; confidence: number; modules: ScanModule[] };
   token?: { mint?: string };
 }
 
@@ -53,6 +59,7 @@ const STYLE = `
 .row { display: flex; gap: 7px; align-items: flex-start; margin: 5px 0; }
 .dot { flex: 0 0 auto; margin-top: 6px; width: 6px; height: 6px; border-radius: 50%; }
 .muted { color: #8b9199; font-size: 11px; }
+.warn { margin: 8px 0 2px; padding: 7px 8px; border-radius: 6px; background: #3a2a06; color: #fbbf24; font-size: 11px; line-height: 1.45; }
 .mint { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; color: #6b7280; word-break: break-all; }
 .vert   { color: #34d399; } .bg-vert   { background: #34d399; color: #04281c; }
 .orange { color: #fbbf24; } .bg-orange { background: #fbbf24; color: #2d1f02; }
@@ -153,6 +160,18 @@ function showResult(mint: string, result: ScanLike): void {
   head.append(close);
 
   const body = el('div', 'body');
+  // Un module absent, c'est un angle mort — pas une bonne nouvelle. Sans ce
+  // bandeau, un token dont l'analyse des holders a échoué s'affiche VERT et
+  // se lit comme « sain », alors que la mesure la plus importante manque.
+  const missing = result.risk.modules.filter((m) => m.score === null);
+  if (missing.length > 0) {
+    const names = missing.map((m) => m.label).join(", ");
+    const coverage = Math.round((result.risk.confidence ?? 0) * 100);
+    body.append(
+      el('div', 'warn', `Note incomplète (${coverage} % de couverture) — non analysé : ${names}. Ton RPC refuse les méthodes indexées : il faut un fournisseur qui les supporte (Helius, Alchemy, QuickNode).`),
+    );
+  }
+
   const findings = result.risk.modules
     .flatMap((m) => m.findings)
     .filter((f) => f.severity === 'critical' || f.severity === 'warning')
