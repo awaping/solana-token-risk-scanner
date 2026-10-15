@@ -90,3 +90,54 @@ test('les caractères hors base58 ne forment pas une adresse', () => {
   // 0, O, I et l sont absents de l'alphabet base58.
   assert.deepEqual(extractAddresses('0OIl0OIl0OIl0OIl0OIl0OIl0OIl0OIl0OIl'), []);
 });
+
+// ---------------------------------------------------------------------------
+// Endpoints RPC hostiles au navigateur
+// ---------------------------------------------------------------------------
+
+import { isBrowserHostile, explainRpcError, ConfigError } from '../extension/src/rpc-errors.js';
+
+test('les endpoints publics Solana sont reconnus comme hostiles au navigateur', () => {
+  // Vérifié par requête réelle : 200 sans Origin, 403 avec un Origin
+  // chrome-extension://. Les proposer par défaut garantissait l'échec.
+  for (const url of [
+    'https://api.mainnet-beta.solana.com',
+    'https://api.devnet.solana.com/',
+    'https://api.testnet.solana.com',
+  ]) {
+    assert.equal(isBrowserHostile(url), true, url);
+  }
+  for (const url of [
+    'https://mainnet.helius-rpc.com/?api-key=abc',
+    'https://solana-mainnet.g.alchemy.com/v2/xyz',
+    'https://example.quiknode.pro/abc/',
+  ]) {
+    assert.equal(isBrowserHostile(url), false, url);
+  }
+  assert.equal(isBrowserHostile('pas-une-url'), false);
+});
+
+test('un 403 devient une phrase actionnable, pas du JSON brut', () => {
+  const raw = '403 : {"jsonrpc":"2.0","error":{"code": 403, "message":"Access forbidden"}}';
+  const explained = explainRpcError(new Error(raw), 'https://api.mainnet-beta.solana.com');
+  assert.ok(explained instanceof ConfigError, 'doit proposer d’ouvrir les réglages');
+  assert.match(explained.message, /refuse les requêtes venant d'un navigateur/);
+  assert.match(explained.message, /RPC privé/);
+  assert.doesNotMatch(explained.message, /jsonrpc/);
+});
+
+test('un 403 sur un RPC privé pointe vers la clé, pas vers l’endpoint public', () => {
+  const explained = explainRpcError(new Error('403 forbidden'), 'https://mainnet.helius-rpc.com/?api-key=x');
+  assert.match(explained.message, /clé d'API/);
+  assert.match(explained.message, /helius-rpc\.com/);
+});
+
+test('les autres pannes RPC restent distinctes', () => {
+  const url = 'https://mainnet.helius-rpc.com/?api-key=x';
+  assert.match(explainRpcError(new Error('401 Unauthorized'), url).message, /invalide ou absente/);
+  assert.match(explainRpcError(new Error('429 Too Many Requests'), url).message, /limite le débit/);
+  assert.match(explainRpcError(new Error('Failed to fetch'), url).message, /injoignable/);
+  // Une erreur inconnue est transmise telle quelle plutôt que travestie.
+  const unknown = new Error('bizarrerie inattendue');
+  assert.equal(explainRpcError(unknown, url), unknown);
+});

@@ -14,6 +14,9 @@ import { RpcClient } from '../../src/rpc/client.js';
 import { scanToken, parseMint } from '../../src/scanner.js';
 import type { ScanResult } from '../../src/types.js';
 import { compareVersions } from '../../src/update/version.js';
+import { ConfigError, explainRpcError, isBrowserHostile } from './rpc-errors.js';
+
+export { ConfigError, explainRpcError, isBrowserHostile };
 
 export interface Settings {
   rpcUrl: string;
@@ -22,8 +25,17 @@ export interface Settings {
   autoScan: boolean;
 }
 
+/**
+ * Pas de RPC par défaut, volontairement.
+ *
+ * `api.mainnet-beta.solana.com` répond 200 à un script serveur mais 403 à
+ * toute requête portant un `Origin: chrome-extension://` — il bloque les
+ * navigateurs. Le mettre par défaut donnerait une extension qui échoue à
+ * chaque token avec un message incompréhensible. Mieux vaut exiger une
+ * configuration explicite et le dire clairement.
+ */
 const DEFAULTS: Settings = {
-  rpcUrl: 'https://api.mainnet-beta.solana.com',
+  rpcUrl: '',
   holderCensus: false,
   autoScan: true,
 };
@@ -74,6 +86,12 @@ export async function scan(mintArg: string): Promise<ScanResult> {
   if (running) return running;
 
   const settings = await getSettings();
+  if (!settings.rpcUrl.trim()) {
+    throw new ConfigError(
+      "Aucun endpoint RPC configuré. L'analyse nécessite un RPC privé (Helius, Triton, QuickNode) : les endpoints publics refusent les requêtes venant d'un navigateur.",
+    );
+  }
+
   const rpc = new RpcClient({ url: settings.rpcUrl, concurrency: 4, maxRetries: 3 });
   const task = scanToken(mint, {
     rpcUrl: settings.rpcUrl,
@@ -141,7 +159,11 @@ export async function checkUpdate(): Promise<UpdateState> {
 // Messages
 // ---------------------------------------------------------------------------
 
-type Request = { type: 'scan'; mint: string } | { type: 'update' } | { type: 'settings' };
+type Request =
+  | { type: 'scan'; mint: string }
+  | { type: 'update' }
+  | { type: 'settings' }
+  | { type: 'open-options' };
 
 chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) => {
   // `sendResponse` asynchrone impose de renvoyer `true` : sans ça, Chrome
@@ -149,12 +171,25 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
   if (request.type === 'scan') {
     scan(request.mint)
       .then((result) => sendResponse({ ok: true, result }))
-      .catch((error: unknown) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      .catch((error: unknown) =>
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          action: error instanceof ConfigError ? error.action : undefined,
+        }),
+      );
     return true;
   }
   if (request.type === 'update') {
     checkUpdate().then((state) => sendResponse({ ok: true, state }));
     return true;
+  }
+  if (request.type === 'open-options') {
+    // Seul le contexte de l'extension peut l'ouvrir : le content script doit
+    // obligatoirement passer par ce message.
+    chrome.runtime.openOptionsPage();
+    sendResponse({ ok: true });
+    return false;
   }
   if (request.type === 'settings') {
     getSettings().then((settings) => sendResponse({ ok: true, settings }));

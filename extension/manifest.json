@@ -4,17 +4,29 @@
   "version": "1.1.0",
   "description": "Affiche le score de risque d'un token Solana (0 = sain, 100 = danger) par-dessus les terminaux memecoin.",
   "minimum_chrome_version": "120",
-  "permissions": ["storage"],
+  "permissions": [
+    "storage"
+  ],
   "host_permissions": [
     "https://api.github.com/*"
   ],
-  "optional_host_permissions": ["https://*/*"],
-  "background": { "service_worker": "dist/background.js", "type": "module" },
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
   "options_page": "options.html",
-  "action": { "default_title": "Solana Token Risk Scanner", "default_popup": "options.html" },
+  "action": {
+    "default_title": "Solana Token Risk Scanner",
+    "default_popup": "options.html"
+  },
   "content_scripts": [
     {
-      "js": ["dist/content.js"],
+      "js": [
+        "dist/content.js"
+      ],
       "run_at": "document_idle",
       "matches": [
         "https://pump.fun/*",

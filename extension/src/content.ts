@@ -58,7 +58,11 @@ const STYLE = `
 .orange { color: #fbbf24; } .bg-orange { background: #fbbf24; color: #2d1f02; }
 .rouge  { color: #f87171; } .bg-rouge  { background: #f87171; color: #2d0606; }
 .spin { color: #8b9199; padding: 12px; }
-.err  { color: #fbbf24; padding: 10px 12px; font-size: 12px; }
+.err  { color: #fbbf24; padding: 10px 12px; font-size: 12px; line-height: 1.5; }
+.act  { margin: 10px 12px 12px; padding: 7px 12px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.act:hover { background: #1d4ed8; }
+.act  { margin: 10px 12px 12px; padding: 7px 12px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.act:hover { background: #1d4ed8; }
 `;
 
 function ensurePanel(): ShadowRoot {
@@ -104,13 +108,27 @@ function showLoading(detection: Detection): void {
   render([body]);
 }
 
-function showError(message: string): void {
+/**
+ * Panneau d'erreur.
+ *
+ * `action` transforme un constat en geste : une erreur de configuration doit
+ * ouvrir les réglages, pas laisser deviner. Afficher la réponse JSON brute du
+ * RPC — « 403 : {"jsonrpc":"2.0",… } » — n'apprend rien à personne.
+ */
+function showError(message: string, action?: 'options'): void {
   const head = el('div', 'head');
   head.append(el('span', 'level bg-orange', 'ERREUR'));
   const close = el('button', 'close', '×');
   close.addEventListener('click', removePanel);
   head.append(close);
-  render([head, el('div', 'err', message)]);
+
+  const nodes: (Node | string)[] = [head, el('div', 'err', message)];
+  if (action === 'options') {
+    const button = el('button', 'act', 'Ouvrir les réglages');
+    button.addEventListener('click', () => void chrome.runtime.sendMessage({ type: 'open-options' }));
+    nodes.push(button);
+  }
+  render(nodes);
 }
 
 function showResult(mint: string, result: ScanLike): void {
@@ -182,11 +200,11 @@ async function evaluate(): Promise<void> {
   try {
     const response = (await chrome.runtime.sendMessage({ type: 'scan', mint: detection.address })) as
       | { ok: true; result: ScanLike }
-      | { ok: false; error: string };
+      | { ok: false; error: string; action?: 'options' };
     // La page a pu changer pendant le scan : on n'écrase pas un verdict plus récent.
     if (currentMint !== detection.address) return;
     if (response?.ok) showResult(detection.address, response.result);
-    else showError(response?.error ?? 'analyse impossible');
+    else showError(response?.error ?? 'analyse impossible', response?.action);
   } catch (error) {
     if (currentMint === detection.address) {
       showError(error instanceof Error ? error.message : String(error));
