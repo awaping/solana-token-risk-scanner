@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Solana Token Risk Scanner</title>
+<style>
+  body { font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; background: #14161a; color: #e8eaed; margin: 0; padding: 18px; width: 340px; }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  p.sub { color: #8b9199; font-size: 11px; margin: 0 0 14px; }
+  label { display: block; margin: 12px 0 4px; font-weight: 600; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 7px 8px; border-radius: 6px; border: 1px solid #2a2e35; background: #0e1013; color: #e8eaed; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  .check { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0; }
+  .hint { color: #8b9199; font-size: 11px; margin: 3px 0 0; }
+  button { margin-top: 14px; padding: 7px 14px; border-radius: 6px; border: 0; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }
+  #saved { color: #34d399; font-size: 11px; margin-left: 8px; }
+  #update { margin-top: 16px; padding-top: 12px; border-top: 1px solid #2a2e35; font-size: 11px; color: #8b9199; }
+  #update a { color: #60a5fa; }
+</style>
+<h1>Solana Token Risk Scanner</h1>
+<p class="sub">Échelle de risque : <strong>0 = sain · 100 = danger maximum</strong>.</p>
+
+<label for="rpc">Endpoint RPC</label>
+<input id="rpc" type="text" spellcheck="false" placeholder="https://mainnet.helius-rpc.com/?api-key=…" />
+<p class="hint">L'endpoint public est limité en débit : une clé Helius/Triton rend l'analyse bien plus fiable. La clé reste dans ce navigateur.</p>
+
+<div class="check"><input id="census" type="checkbox" /><label for="census" style="margin:0;font-weight:400">Recensement complet des holders<p class="hint">Plus précis sur le dusting, mais lent et refusé par beaucoup de RPC.</p></label></div>
+<div class="check"><input id="auto" type="checkbox" /><label for="auto" style="margin:0;font-weight:400">Analyse automatique à l'ouverture d'un token</label></div>
+
+<button id="save">Enregistrer</button><span id="saved" hidden>enregistré</span>
+<div id="update">Vérification des mises à jour…</div>
+<script type="module" src="dist/options.js"></script>

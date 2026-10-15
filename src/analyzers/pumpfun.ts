@@ -11,7 +11,7 @@
  *   48  complete                 bool
  *   49  creator                  Pubkey  (ajouté en 2025, absent des anciens comptes)
  */
-import { createHash } from 'node:crypto';
+import { sha256 } from '@noble/hashes/sha256';
 import { PublicKey } from '@solana/web3.js';
 import { PUMP_FUN, PUMP_FUN_PROGRAM_ID } from '../constants.js';
 import type { BondingCurveState } from '../types.js';
@@ -19,7 +19,9 @@ import { bn, BigNumber } from '../utils/math.js';
 
 /** Discriminateur Anchor d'un compte : sha256("account:<Nom>")[0..8]. */
 export function anchorAccountDiscriminator(name: string): Buffer {
-  return createHash('sha256').update(`account:${name}`).digest().subarray(0, 8);
+  // sha256 de @noble/hashes au lieu de node:crypto : octet pour octet le même
+  // résultat (vérifié par test), mais utilisable tel quel dans un navigateur.
+  return Buffer.from(sha256(new TextEncoder().encode(`account:${name}`)).slice(0, 8));
 }
 
 export const BONDING_CURVE_DISCRIMINATOR = anchorAccountDiscriminator('BondingCurve');

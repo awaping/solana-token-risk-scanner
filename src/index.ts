@@ -13,8 +13,9 @@ import { RpcClient } from './rpc/client.js';
 import { parseMint, scanToken, type ProgressCallback } from './scanner.js';
 import type { RiskLevel, ScanResult } from './types.js';
 import { c, fmtNum, setColorEnabled } from './utils/format.js';
+import { CURRENT_VERSION, checkForUpdate, printUpdateNotice } from './update/check.js';
 
-const VERSION = '1.0.0';
+const VERSION = CURRENT_VERSION;
 
 const help = () => `
 ${c.bold('Solana Token Risk Scanner')} — diagnostic de sécurité on-chain d'un token SPL
@@ -23,6 +24,7 @@ ${c.bold('Usage')}
   npm run scan -- <MINT_ADDRESS> [options]      analyse complète d'un token
   npm run stream -- [options]                  détection temps réel des lancements (voir --help)
   sol-risk <MINT_ADDRESS> [options]            (après npm run build && npm link)
+  npm run update                               installe la dernière version publiée sur GitHub
 
 ${c.bold('Options')}
   --rpc <url>           Endpoint RPC (défaut : $SOLANA_RPC_URL ou mainnet-beta public)
@@ -33,6 +35,8 @@ ${c.bold('Options')}
   --fail-on <niveau>    Code de sortie 2 si le niveau atteint "orange" ou "rouge"
   --json                Sortie JSON (pour scripts / bots)
   --no-color            Désactive les couleurs
+  --auto-update         Installe et relance automatiquement (idem : AUTO_UPDATE=1)
+  --no-update-check     N'interroge pas GitHub (idem : NO_UPDATE_CHECK=1)
   -h, --help            Affiche cette aide
   -v, --version         Affiche la version
 
@@ -78,12 +82,33 @@ function describeCliError(error: unknown): string {
 
 async function main(): Promise<number> {
   loadDotEnv();
+  if (process.argv.includes('--auto-update')) process.env.AUTO_UPDATE = '1';
+
+  // AUTO_UPDATE=1 : installe la dernière version et relance la commande à
+  // l'identique. L'utilisateur n'a rien à taper, l'outil démarre à jour.
+  const { autoUpdateAndRestart } = await import('./update/apply.js');
+  const restarted = await autoUpdateAndRestart((line) => console.error(c.gray(line)));
+  if (restarted !== null) return restarted;
+
+  // Sous-commande de mise à jour : `sol-risk update`.
+  if (process.argv[2] === 'update') {
+    const { applyUpdate } = await import('./update/apply.js');
+    const info = await checkForUpdate({ force: true });
+    console.log(info ? c.bold(`Version ${info.current} → ${info.latest}`) : `Version ${CURRENT_VERSION} (aucune version plus récente publiée)`);
+    const outcome = await applyUpdate((line) => console.log(c.gray(line)));
+    console.log(outcome.ok ? c.green(`✔ ${outcome.message}`) : c.red(`✖ ${outcome.message}`));
+    return outcome.ok ? 0 : 1;
+  }
 
   // Sous-commande temps réel : `sol-risk stream [options]`.
   if (process.argv[2] === 'stream') {
     const { runStream } = await import('./stream/cli.js');
     return runStream(process.argv.slice(3));
   }
+
+  // Vérification lancée en arrière-plan : elle tourne pendant le scan et son
+  // résultat est consommé à la fin, sans ajouter de latence.
+  const updateCheck = checkForUpdate();
 
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -96,6 +121,8 @@ async function main(): Promise<number> {
       'fail-on': { type: 'string' },
       json: { type: 'boolean', default: false },
       'no-color': { type: 'boolean', default: false },
+      'no-update-check': { type: 'boolean', default: false },
+      'auto-update': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', short: 'v', default: false },
     },

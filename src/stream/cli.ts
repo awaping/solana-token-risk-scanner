@@ -49,6 +49,7 @@ import { GrpcSource } from './sources/grpc.js';
 import type { TxSource } from './sources/types.js';
 import { httpToWs, WebSocketLogsSource } from './sources/websocket.js';
 import { warmUpHotPath } from './warmup.js';
+import { checkForUpdate, printUpdateNotice } from '../update/check.js';
 
 const HELP = () => `
 ${c.bold('Mode stream')} — détection temps réel des lancements de tokens
@@ -293,6 +294,7 @@ export async function runStream(argv: string[]): Promise<number> {
       chains: { type: 'boolean', default: false },
       'no-warmup': { type: 'boolean', default: false },
       'no-color': { type: 'boolean', default: false },
+      'auto-update': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -305,6 +307,10 @@ export async function runStream(argv: string[]): Promise<number> {
     printChains();
     return 0;
   }
+
+  // Le mode stream tourne en continu : on signale la mise à jour au démarrage,
+  // une fois, sans jamais retarder l'ouverture du flux.
+  void printUpdateNotice(checkForUpdate());
 
   const chain = resolveStreamChain(positionals);
   const sort = (values.sort ?? 'trades').toLowerCase() as SortKey;

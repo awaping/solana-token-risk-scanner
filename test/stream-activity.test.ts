@@ -1,6 +1,8 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyTrade, marketMetrics, newActivity, tradesLastMinute } from '../src/stream/activity.js';
+import bs58 from 'bs58';
+import { applyTrade, concentration, marketMetrics, newActivity, tradesLastMinute } from '../src/stream/activity.js';
+import { computeFastScore, type FastSnapshot } from '../src/stream/fast-score.js';
 import { buildBoard, renderBoard } from '../src/stream/dashboard.js';
 import { StreamEngine, type VerdictEvent } from '../src/stream/engine.js';
 import { ReputationStore } from '../src/stream/reputation.js';
@@ -118,7 +120,7 @@ test('concentration réelle : une baleine non-dev fait monter le risque', () => 
   const row = buildBoard(engine, { sort: 'trades', limit: 5, now: Date.now() })[0]!;
   assert.ok((row.top10Pct ?? 0) > 35);
   assert.equal(row.verdict.level, 'ROUGE');
-  assert.ok(row.verdict.findings.some((f) => f.message.includes('Un wallet détient')));
+  assert.ok(row.verdict.findings.some((f) => f.message.includes('wallet hors dev détient')));
 });
 
 test('les lancements morts sont oubliés après le délai d’inactivité', () => {
@@ -129,4 +131,88 @@ test('les lancements morts sont oubliés après le délai d’inactivité', () =
   now += 61_000;
   (engine as unknown as { cleanup(): void }).cleanup();
   assert.equal(engine.stats().tracked, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Régression : le cas PoH (2026-10-12).
+//
+// Un token dont tous les voyants « classiques » étaient au vert — dev à 0 %,
+// snipers à 0 %, mint et freeze révoquées, top 10 à 11,3 % seulement — notait
+// VERT 0 et a rug en quelques minutes. La cause : deux wallets tiers à 5,4 % et
+// 5,2 % sur une courbe à 14 % de progression, soit la quasi-totalité du
+// flottant entre deux mains.
+// ---------------------------------------------------------------------------
+
+const pohSnapshot = (over: Partial<FastSnapshot> = {}): FastSnapshot => ({
+  creator: { address: key(), launches24h: 1, devSellsSeen: 0 },
+  devBuyPct: 0,
+  bundle: { windowSlots: 1, sameSlotBuyers: 2, windowBuyers: 14, bundlePct: 0, devPct: 0, cloneGroupSize: 0, cloneGroupSol: 0 },
+  devSold: false,
+  concentration: {
+    holders: 13,
+    top1Pct: 5.4,
+    top10Pct: 11.3,
+    top1IsDev: false,
+    devPct: 0,
+    topNonDevPct: 5.4,
+    whalePcts: [5.4, 5.2],
+  },
+  curveProgressPct: 14,
+  ...over,
+});
+
+test('PoH : deux baleines sous 10 % sur une courbe jeune → ROUGE', () => {
+  const v = computeFastScore(pohSnapshot());
+  assert.equal(v.level, 'ROUGE', `score ${v.score}`);
+  assert.ok(v.score >= 70);
+  assert.ok(v.findings.some((f) => f.message.includes('2 wallets hors dev au-dessus de 3,5 %')));
+  assert.ok(v.floors.some((f) => f.reason.includes('baleines')));
+});
+
+test('PoH : la même concentration sur une courbe mûre ne déclenche aucun plancher', () => {
+  // 5,4 % d'un token à 85 % de progression se revend sans casser le carnet.
+  const v = computeFastScore(
+    pohSnapshot({
+      concentration: { holders: 300, top1Pct: 5.4, top10Pct: 18, top1IsDev: false, devPct: 0, topNonDevPct: 5.4, whalePcts: [5.4] },
+      curveProgressPct: 85,
+    }),
+  );
+  assert.equal(v.floors.length, 0);
+  assert.notEqual(v.level, 'ROUGE');
+});
+
+test('aucun faux positif : lancement bien réparti au même stade de courbe', () => {
+  const v = computeFastScore(
+    pohSnapshot({
+      concentration: { holders: 40, top1Pct: 2.1, top10Pct: 9.5, top1IsDev: false, devPct: 0, topNonDevPct: 2.1, whalePcts: [] },
+    }),
+  );
+  assert.equal(v.level, 'VERT');
+  assert.equal(v.floors.length, 0);
+});
+
+test('aucun faux positif : token de quelques secondes sans baleine', () => {
+  const v = computeFastScore(
+    pohSnapshot({
+      concentration: { holders: 6, top1Pct: 2.8, top10Pct: 7, top1IsDev: false, devPct: 0, topNonDevPct: 2.8, whalePcts: [] },
+      curveProgressPct: 4,
+    }),
+  );
+  assert.equal(v.level, 'VERT');
+});
+
+test('concentration : les baleines excluent le dev et s’arrêtent au seuil', () => {
+  const a = newActivity();
+  const dev = key();
+  const devKey = Buffer.from(bs58.decode(dev)).toString('base64');
+  const supply = 1_000_000_000_000_000n;
+  applyTrade(a, trade(devKey, true, 80_000_000_000_000n), Date.now()); // dev 8 %
+  applyTrade(a, trade('w1', true, 54_000_000_000_000n), Date.now()); // 5,4 %
+  applyTrade(a, trade('w2', true, 52_000_000_000_000n), Date.now()); // 5,2 %
+  applyTrade(a, trade('w3', true, 30_000_000_000_000n), Date.now()); // 3,0 % → sous le seuil
+  const c = concentration(a, supply, new Set([devKey]));
+  assert.deepEqual(c.whalePcts, [5.4, 5.2]);
+  assert.equal(c.topNonDevPct, 5.4);
+  assert.equal(c.devPct, 8);
+  assert.equal(c.top1IsDev, true);
 });

@@ -102,3 +102,32 @@ export function piecewise(value: number, points: ReadonlyArray<readonly [number,
 }
 
 export const clamp = (value: number, min = 0, max = 100): number => Math.min(max, Math.max(min, value));
+
+/**
+ * Combine des indices de risque indépendants (0-100) en une note unique.
+ *
+ * Pourquoi pas une simple somme plafonnée : additionner puis borner à 100 fait
+ * saturer la note dès trois ou quatre signaux. Tous les tokens à problèmes
+ * ressortent alors à 100 et l'ordre entre eux disparaît — un token avec deux
+ * défauts mineurs devient indiscernable d'un rug avéré. Les bonus fixes
+ * (+10, +15, +20) aggravent le phénomène en faisant retomber les sommes sur
+ * une poignée de valeurs rondes.
+ *
+ * Produit des complémentaires (« noisy-OR », la combinaison usuelle
+ * d'indicateurs indépendants) : chaque signal ne consomme qu'une FRACTION de
+ * la marge restante.
+ *
+ *   combiné = 1 − Π (1 − rᵢ)
+ *
+ * Trois propriétés qui comptent : la note reste monotone (un signal de plus ne
+ * peut pas la faire baisser), elle approche 100 sans jamais y coller, et elle
+ * s'étale sur toute l'échelle au lieu de s'empiler sur quelques paliers.
+ */
+export function combineRisks(risks: Iterable<number>): number {
+  let safe = 1;
+  for (const risk of risks) {
+    if (!Number.isFinite(risk) || risk <= 0) continue;
+    safe *= 1 - clamp(risk) / 100;
+  }
+  return (1 - safe) * 100;
+}

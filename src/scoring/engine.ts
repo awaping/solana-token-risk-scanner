@@ -25,6 +25,7 @@ import type {
   ScoreFloor,
   TokenInfo,
 } from '../types.js';
+import { CONCENTRATION } from '../constants.js';
 import { clamp, piecewise } from '../utils/math.js';
 import { fmtNum, fmtPct, fmtSol, shortAddr } from '../utils/format.js';
 
@@ -121,7 +122,7 @@ export function scoreHolders(h: HoldersAnalysis): SubScore {
   const top10Score = piecewise(h.top10Pct, [[10, 0], [20, 25], [30, 50], [50, 85], [70, 100]]);
   const top20Score = piecewise(h.top20Pct, [[15, 0], [30, 30], [45, 60], [60, 85], [80, 100]]);
   const maxScore = piecewise(h.maxWalletPct, [[2, 0], [5, 30], [10, 60], [20, 90], [30, 100]]);
-  const score = 0.3 * top10Score + 0.3 * top20Score + 0.4 * maxScore;
+  let score = 0.3 * top10Score + 0.3 * top20Score + 0.4 * maxScore;
 
   if (h.wallets.length === 0) {
     findings.push({ severity: 'info', message: 'Aucun wallet hors protocole dans le top 20' });
@@ -157,6 +158,31 @@ export function scoreHolders(h: HoldersAnalysis): SubScore {
     findings.push({
       severity: 'warning',
       message: `${fmtPct(programPct)} détenus par des comptes-programmes non identifiés (locker, vesting, CEX ?)`,
+    });
+  }
+
+  // Baleines hors créateur. Le top 10 agrégé peut paraître sain alors que deux
+  // wallets tiers concentrent l'essentiel : c'est la répartition DANS le top 10
+  // qui détermine si le carnet peut être vidé, pas son total.
+  const whales = h.wallets.filter(
+    (w) => w.kind !== 'creator' && w.kind !== 'program' && w.pct >= CONCENTRATION.WHALE_SUPPLY_PCT,
+  );
+  if (whales.length > 0) {
+    const whaleSum = whales.reduce((acc, w) => acc + w.pct, 0);
+    const detail = whales.map((w) => `${shortAddr(w.owner)} ${fmtPct(w.pct)}`).join(' · ');
+    findings.push({
+      severity: whales.length >= 2 ? 'critical' : 'warning',
+      message: `${whales.length} wallet${whales.length > 1 ? 's' : ''} hors créateur au-dessus de ${fmtPct(CONCENTRATION.WHALE_SUPPLY_PCT, 1)} — ${detail} (${fmtPct(whaleSum)} cumulés)`,
+    });
+    // Montée du sous-score, mais volontairement AUCUN plancher ici : ce module
+    // ne voit pas la liquidité. Deux wallets à 4 % sont anodins sur un AMM
+    // profond et mortels sur une curve à 14 %. C'est le mode live (fast-score),
+    // qui connaît la progression de la courbe, qui pose le plancher.
+    score = Math.max(score, piecewise(whales.length, [[1, 15], [2, 45], [3, 65], [5, 85]]));
+  } else if (h.wallets.length > 0) {
+    findings.push({
+      severity: 'ok',
+      message: `Aucun wallet hors créateur au-dessus de ${fmtPct(CONCENTRATION.WHALE_SUPPLY_PCT, 1)}`,
     });
   }
 

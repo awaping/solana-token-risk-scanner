@@ -85,3 +85,31 @@ export const PUMP_FUN = {
   INITIAL_REAL_TOKEN_RESERVES: 793_100_000_000_000n,
   TOKEN_TOTAL_SUPPLY: 1_000_000_000_000_000n,
 } as const;
+
+/**
+ * Part de la supply totale réellement vendable sur la bonding curve (0,7931).
+ * Le reste est réservé à la liquidité de graduation. Sert à convertir une part
+ * de supply en part du flottant réellement en circulation.
+ */
+export const PUMP_FUN_CIRCULATING_FACTOR =
+  Number(PUMP_FUN.INITIAL_REAL_TOKEN_RESERVES) / Number(PUMP_FUN.TOKEN_TOTAL_SUPPLY);
+
+/**
+ * Seuils de concentration.
+ *
+ * WHALE_SUPPLY_PCT — au-delà, un wallet hors dev détient assez pour vider seul
+ * le carnet d'une courbe jeune. Le seuil de 3,5 % n'est pas arbitraire : sur
+ * une curve à 15 % de progression, 3,5 % de la supply représente environ un
+ * quart du flottant, soit plus que ce que la réserve peut absorber sans
+ * effondrer le prix.
+ *
+ * EARLY_CURVE_PCT — en dessous de cette progression, la réserve SOL est trop
+ * mince pour absorber la sortie d'une baleine. C'est la combinaison « baleine
+ * + courbe jeune » qui tue, pas chacun des deux pris isolément.
+ */
+export const CONCENTRATION = {
+  WHALE_SUPPLY_PCT: 3.5,
+  EARLY_CURVE_PCT: 25,
+  /** Part du flottant détenue par le top 10 au-delà de laquelle la sortie est illusoire. */
+  FLOAT_CAPTURE_PCT: 70,
+} as const;

@@ -158,12 +158,16 @@ export function renderReport(result: ScanResult): string {
   // Score global
   lines.push(rule('SCORE DE RISQUE GLOBAL'));
   const scoreColor = colorForScore(risk.score);
+  // Le sens de l'échelle est écrit dans la ligne elle-même : un « 80 / 100 » nu
+  // se lit spontanément comme une note sur 20 — donc comme un bon résultat.
   lines.push(
-    `  ${levelColor(`${risk.score} / 100`)}  ${levelColor(`[${risk.level}]`)}  ${scoreColor(bar(risk.score, 40))}`,
+    `  ${levelColor(`risque ${risk.score} / 100`)}  ${levelColor(`[${risk.level}]`)}  ${scoreColor(bar(risk.score, 40))}`,
   );
   lines.push(`  ${VERDICTS[risk.level]}`);
   const available = risk.modules.filter((m) => m.score !== null).length;
-  const confidence = `Confiance ${fmtPct(risk.confidence * 100, 0)} (${available}/${risk.modules.length} modules)`;
+  // Surtout pas « Confiance 100 % » juste sous le score : deux pourcentages
+  // voisins dont l'un est bon à 100 et l'autre catastrophique à 100.
+  const confidence = `couverture ${available}/${risk.modules.length} modules`;
   const floorInfo =
     risk.floors.length > 0 && risk.floors[0]!.floor > risk.weightedScore
       ? ` · score pondéré ${fmtNum(risk.weightedScore, 1)} relevé au plancher ${risk.floors[0]!.floor}`
@@ -172,6 +176,8 @@ export function renderReport(result: ScanResult): string {
   lines.push('');
 
   // Détail par module
+  lines.push(c.gray('  Sous-scores : 0 = sain · 100 = dangereux (barre pleine = mauvais signe)'));
+  lines.push('');
   for (const module of risk.modules) {
     lines.push(moduleHeader(module));
     if (module.score === null) {

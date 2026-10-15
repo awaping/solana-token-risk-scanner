@@ -6,7 +6,7 @@
  * flux voit chaque achat et chaque vente dès le premier bloc, les soldes par
  * wallet (et donc le nombre de holders) sont exacts sans aucune requête RPC.
  */
-import { PUMP_FUN } from '../constants.js';
+import { CONCENTRATION, PUMP_FUN } from '../constants.js';
 
 const MINUTE_MS = 60_000;
 const MAX_RECENT = 5_000;
@@ -122,6 +122,17 @@ export interface Concentration {
   top1IsDev: boolean;
   /** Part détenue par le(s) wallet(s) du dev (%). */
   devPct: number;
+  /** Part du plus gros wallet HORS dev (%). */
+  topNonDevPct: number;
+  /**
+   * Parts des wallets hors dev au-dessus de CONCENTRATION.WHALE_SUPPLY_PCT,
+   * du plus gros au plus petit.
+   *
+   * Le dev est exclu : son achat initial est déjà noté séparément. Ce qui
+   * compte ici, ce sont les wallets tiers assez gros pour vider le carnet,
+   * typiquement des snipers ou des initiés entrés au premier slot.
+   */
+  whalePcts: number[];
 }
 
 /** Concentration réelle calculée sur les soldes observés (O(n log n)). */
@@ -133,11 +144,26 @@ export function concentration(a: ActivityState, supply: bigint, devKeys: Readonl
   let dev = 0n;
   for (const key of devKeys) dev += a.balances.get(key) ?? 0n;
   const top = entries[0];
+
+  // Les entrées sont triées par solde décroissant : dès qu'un wallet hors dev
+  // passe sous le seuil, tous les suivants aussi. On sort immédiatement.
+  const whalePcts: number[] = [];
+  let topNonDevPct = 0;
+  for (const [key, amount] of entries) {
+    if (devKeys.has(key)) continue;
+    const pct = toPct(amount);
+    if (topNonDevPct === 0) topNonDevPct = pct;
+    if (pct < CONCENTRATION.WHALE_SUPPLY_PCT) break;
+    whalePcts.push(pct);
+  }
+
   return {
     holders: a.holders,
     top1Pct: top ? toPct(top[1]) : 0,
     top10Pct: toPct(top10),
     top1IsDev: top ? devKeys.has(top[0]) : false,
     devPct: toPct(dev),
+    topNonDevPct,
+    whalePcts,
   };
 }

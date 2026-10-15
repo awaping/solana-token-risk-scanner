@@ -30,7 +30,7 @@ import {
   type FastVerdict,
   type TradeRecord,
 } from './fast-score.js';
-import { applyTrade, concentration, newActivity, type ActivityState, type Concentration } from './activity.js';
+import { applyTrade, concentration, marketMetrics, newActivity, type ActivityState, type Concentration } from './activity.js';
 import type { ReputationStore } from './reputation.js';
 import type { StreamTx } from './sources/types.js';
 import { sanitizeLabel } from '../utils/format.js';
@@ -271,6 +271,9 @@ export class StreamEngine extends EventEmitter<{ verdict: [VerdictEvent]; status
       devSold: token.devSold,
       copycatOf: token.copycatOf,
       concentration: token.activity.holders >= 5 ? concentration(token.activity, supply, this.devKeys(token)) : undefined,
+      // La progression conditionne la lecture de la concentration : une baleine
+      // n'est dangereuse que si la réserve est trop mince pour l'absorber.
+      curveProgressPct: token.graduated ? 100 : marketMetrics(token.activity, supply).progressPct,
     });
   }
 

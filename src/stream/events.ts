@@ -14,13 +14,15 @@
  *   CompleteEvent{ user, mint, bonding_curve, timestamp: i64 }
  * Les champs ajoutés par les versions récentes du programme sont lus s'ils sont présents.
  */
-import { createHash } from 'node:crypto';
+import { sha256 } from '@noble/hashes/sha256';
 import bs58 from 'bs58';
 import { PUMP_FUN_PROGRAM_ID } from '../constants.js';
 
 /** Discriminateur Anchor d'un événement : sha256("event:<Nom>")[0..8]. */
 export function anchorEventDiscriminator(name: string): Buffer {
-  return createHash('sha256').update(`event:${name}`).digest().subarray(0, 8);
+  // sha256 de @noble/hashes au lieu de node:crypto : octet pour octet le même
+  // résultat (vérifié par test), mais utilisable tel quel dans un navigateur.
+  return Buffer.from(sha256(new TextEncoder().encode(`event:${name}`)).slice(0, 8));
 }
 
 const CREATE_DISC = anchorEventDiscriminator('CreateEvent');
