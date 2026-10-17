@@ -254,6 +254,8 @@ export interface RiskScore {
 
 export interface ScanResult {
   mint: string;
+  /** Adresse fournie quand ce n'était pas le mint (bonding curve, pool, compte de token). */
+  resolvedFrom?: { address: string; kind: string };
   generatedAt: Date;
   durationMs: number;
   rpcEndpoint: string;

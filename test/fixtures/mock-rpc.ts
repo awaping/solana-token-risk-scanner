@@ -140,11 +140,12 @@ export class MockChain {
     return { slot: this.slot };
   }
 
-  private tokenAccountsOf(mint: string) {
+  /** Comptes de token (SPL Token) d'un mint, ou de tous les mints si `mint` est omis. */
+  private tokenAccountsOf(mint?: string) {
     return [...this.accounts.entries()]
       .filter(([, a]) => a.owner.equals(TOKEN_PROGRAM_ID) && a.data.length === ACCOUNT_SIZE)
       .map(([address, a]) => ({ address, decoded: AccountLayout.decode(a.data) }))
-      .filter((a) => a.decoded.mint.toBase58() === mint);
+      .filter((a) => mint === undefined || a.decoded.mint.toBase58() === mint);
   }
 
   handle(method: string, params: unknown[]): unknown {
@@ -180,8 +181,10 @@ export class MockChain {
 
       case 'getTokenAccountsByOwner': {
         const owner = params[0] as string;
-        const { mint } = params[1] as { mint: string };
-        const value = this.tokenAccountsOf(mint)
+        const filter = params[1] as { mint?: string; programId?: string };
+        // Filtre par mint, ou par programme (seul SPL Token est simulé).
+        if (filter.programId && filter.programId !== TOKEN_PROGRAM_ID.toBase58()) return { context: this.context(), value: [] };
+        const value = this.tokenAccountsOf(filter.mint)
           .filter((a) => a.decoded.owner.toBase58() === owner)
           .map((a) => ({ pubkey: a.address, account: this.encode(this.accounts.get(a.address)) }));
         return { context: this.context(), value };

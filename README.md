@@ -73,6 +73,23 @@ npm install
 cp .env.example .env        # puis renseigner SOLANA_RPC_URL
 ```
 
+### Configurer le fichier `.env`
+
+`.env` est un **fichier** (son nom commence par un point et n'a pas d'autre extension) à créer à la racine du projet, à côté de `package.json`. Il n'existe pas après le clonage : on le crée en copiant le modèle `.env.example`. Sous Windows, dans PowerShell, depuis le dossier du projet :
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Remplacez la ligne `SOLANA_RPC_URL=…` par l'URL RPC de votre fournisseur. Chez Helius : tableau de bord → RPC → *Connect* → bouton copier de **RPC URL** :
+
+```
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=VOTRE_CLE
+```
+
+Enregistrez (Ctrl+S) et relancez la commande. Le WebSocket est déduit automatiquement de cette URL (`wss://…`). L'en-tête du mode stream affiche l'endpoint utilisé, clé masquée, ce qui permet de vérifier que le fichier est bien lu. Si le Bloc-notes a enregistré `.env.txt`, l'outil le signale ; renommez-le avec `Rename-Item .env.txt .env`. Ne partagez jamais votre clé : le fichier `.env` est exclu de Git.
+
 Dépendances d'exécution : `@solana/web3.js`, `@solana/spl-token` et `bignumber.js`, plus `ws` et `bs58` pour le mode stream et `viem` pour les blockchains EVM. Les couleurs ANSI, les arguments CLI et le chargement du `.env` passent par Node.js natif.
 
 > **Deux commandes, deux usages** : `npm run scan -- <MINT>` analyse **un** token Solana donné ; `npm run stream [blockchain]` (sans adresse) surveille **tous** les nouveaux lancements d'une blockchain. Avec npm, les options se placent après `--` : `npm run scan -- <MINT> --json`, `npm run stream -- base --sort volume`.
@@ -85,6 +102,8 @@ Dépendances d'exécution : `@solana/web3.js`, `@solana/spl-token` et `bignumber
 ---
 
 ## Utilisation
+
+L'adresse attendue est celle du **token** (mint, ou « CA »). Une adresse voisine est aussi acceptée : le scanner remonte jusqu'au mint depuis une bonding curve Pump.fun, une pool PumpSwap / Raydium (l'adresse de « pair » de DexScreener), un compte de token, ou un lien complet (`pump.fun/coin/…`, `dexscreener.com/solana/…`, `solscan.io/token/…`).
 
 ```bash
 # Analyse ponctuelle

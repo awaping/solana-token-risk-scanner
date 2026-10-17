@@ -15,7 +15,8 @@ import { analyzeCreator, resolveCreator } from './analyzers/creator.js';
 import { analyzeDusting } from './analyzers/dusting.js';
 import { analyzeHolders } from './analyzers/holders.js';
 import { analyzeReserve } from './analyzers/reserve.js';
-import { analyzeToken } from './analyzers/token.js';
+import { resolveMintFromAccount } from './analyzers/resolve.js';
+import { analyzeToken, NotAMintError } from './analyzers/token.js';
 import { computeRiskScore } from './scoring/engine.js';
 import type { ModuleOutcome, ScanResult } from './types.js';
 
@@ -54,9 +55,18 @@ function track<T>(step: string, outcome: Promise<ModuleOutcome<T>>, onProgress?:
   });
 }
 
+const BASE58_ADDRESS = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
+
+/**
+ * Lit une adresse Solana. Accepte aussi un lien copié depuis un explorateur ou
+ * un agrégateur (pump.fun/coin/…, dexscreener.com/solana/…, solscan.io/token/…) :
+ * la dernière adresse du lien est retenue.
+ */
 export function parseMint(address: string): PublicKey {
+  const input = address.trim();
+  const candidate = /[/?=]/.test(input) ? (input.match(BASE58_ADDRESS)?.at(-1) ?? input) : input;
   try {
-    return new PublicKey(address.trim());
+    return new PublicKey(candidate);
   } catch {
     throw new Error(`Adresse de mint invalide : "${address}"`);
   }
@@ -74,9 +84,19 @@ export async function scanToken(
   const { onProgress } = options;
   const requestsBefore = rpc.requestCount;
 
-  // Le mint est indispensable : une erreur ici interrompt l'analyse.
+  // Le mint est indispensable : une erreur ici interrompt l'analyse. Si l'adresse
+  // est une bonding curve, une pool ou un compte de token, on remonte jusqu'au mint.
   const tokenStarted = Date.now();
-  const token = await analyzeToken(rpc, mint);
+  let resolvedFrom: ScanResult['resolvedFrom'];
+  let token: Awaited<ReturnType<typeof analyzeToken>>;
+  try {
+    token = await analyzeToken(rpc, mint);
+  } catch (error) {
+    if (!(error instanceof NotAMintError)) throw error;
+    const resolved = await resolveMintFromAccount(rpc, error.address, error.account);
+    token = await analyzeToken(rpc, resolved.mint);
+    resolvedFrom = { address: mint.toBase58(), kind: resolved.from };
+  }
   onProgress?.('Mint & autorités', Date.now() - tokenStarted, true);
 
   const holdersP = track('Top 20 holders', settle(analyzeHolders(rpc, token)), onProgress);
@@ -132,6 +152,7 @@ export async function scanToken(
 
   return {
     mint: token.mint,
+    ...(resolvedFrom ? { resolvedFrom } : {}),
     generatedAt: new Date(),
     durationMs: Date.now() - started,
     rpcEndpoint: maskRpcUrl(rpc.url),

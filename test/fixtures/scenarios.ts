@@ -65,7 +65,7 @@ export function buildRugChain() {
   // Le créateur a déployé 3 autres tokens avant celui-ci.
   for (let i = 0; i < 3; i++) chain.addTransaction([creator], { signer: creator, innerInstructions: [initMint2(randomKey())] });
   chain.addTransaction([creator, mint], { signer: creator, innerInstructions: [initMint2(mint)] });
-  return { chain, mint, creator, clones };
+  return { chain, mint, creator, clones, pool };
 }
 
 /** Scénario 2 : bonding curve active, distribution organique, créateur ancien. */
@@ -120,7 +120,7 @@ export function buildRaydiumChain() {
   // Historique du mint : la plus ancienne transaction est signée par le créateur.
   chain.addTransaction([mint, creator], { signer: creator, innerInstructions: [initMint2(mint)] });
   for (let i = 0; i < 5; i++) chain.addTransaction([mint], { signer: randomKey() });
-  return { chain, mint, creator };
+  return { chain, mint, creator, amm };
 }
 
 export const SCENARIOS = {

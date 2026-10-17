@@ -10,10 +10,11 @@ import { promisify } from 'node:util';
 import type { ScannerConfig } from '../src/config.js';
 import { RAYDIUM_AMM_V4_AUTHORITY } from '../src/constants.js';
 import { renderJson, renderReport } from '../src/report/console.js';
-import { scanToken } from '../src/scanner.js';
+import { parseMint, scanToken } from '../src/scanner.js';
 import type { ScanResult } from '../src/types.js';
 import { setColorEnabled } from '../src/utils/format.js';
 import { MockChain, randomKey, startMockRpc } from './fixtures/mock-rpc.js';
+import { bondingCurvePda } from '../src/analyzers/pumpfun.js';
 import { buildHealthyChain, buildRaydiumChain, buildRugChain } from './fixtures/scenarios.js';
 
 const config = (rpcUrl: string, overrides: Partial<ScannerConfig> = {}): ScannerConfig => ({
@@ -174,5 +175,55 @@ describe('scan de bout en bout (RPC simulé)', () => {
     const json = JSON.parse(outcome.stdout) as ScanResult;
     assert.equal(json.risk.level, 'ROUGE');
     assert.equal(json.mint, mint.toBase58());
+  });
+});
+
+describe('adresse fournie autre que le mint : remontée jusqu’au mint', () => {
+  const servers: Server[] = [];
+  const serve = async (chain: MockChain) => {
+    const { url, server } = await startMockRpc(chain);
+    servers.push(server);
+    return url;
+  };
+  after(() => servers.forEach((s) => s.close()));
+
+  test('bonding curve Pump.fun → mint (adresse affichée par DexScreener)', async () => {
+    const { chain, mint } = buildHealthyChain();
+    const result = await scanToken(bondingCurvePda(mint).toBase58(), config(await serve(chain)));
+    assert.equal(result.mint, mint.toBase58());
+    assert.deepEqual(result.resolvedFrom, { address: bondingCurvePda(mint).toBase58(), kind: 'bonding curve Pump.fun' });
+    setColorEnabled(false);
+    assert.match(renderReport(result), /retrouvé depuis l'adresse fournie \(bonding curve Pump\.fun\)/);
+  });
+
+  test('pool PumpSwap, pool Raydium AMM v4 (WSOL en base) et compte de token → mint', async () => {
+    const rug = buildRugChain();
+    const viaPool = await scanToken(rug.pool.toBase58(), config(await serve(rug.chain)));
+    assert.equal(viaPool.mint, rug.mint.toBase58());
+    assert.equal(viaPool.resolvedFrom?.kind, 'pool PumpSwap');
+
+    const ray = buildRaydiumChain();
+    const viaAmm = await scanToken(ray.amm.toBase58(), config(await serve(ray.chain)));
+    assert.equal(viaAmm.mint, ray.mint.toBase58());
+    assert.equal(viaAmm.resolvedFrom?.kind, 'pool Raydium AMM v4');
+
+    const healthy = buildHealthyChain();
+    const holder = healthy.chain.addTokenAccount(healthy.mint, randomKey(), 1_000n);
+    const viaAccount = await scanToken(holder.toBase58(), config(await serve(healthy.chain)));
+    assert.equal(viaAccount.mint, healthy.mint.toBase58());
+    assert.equal(viaAccount.resolvedFrom?.kind, 'compte de token');
+  });
+
+  test('wallet : erreur explicite qui demande l’adresse du token', async () => {
+    const { chain, creator } = buildRaydiumChain();
+    await assert.rejects(scanToken(creator.toBase58(), config(await serve(chain))), /est un wallet, pas un token/);
+  });
+
+  test('lien pump.fun, DexScreener ou Solscan : adresse extraite', () => {
+    const mint = randomKey().toBase58();
+    assert.equal(parseMint(`https://pump.fun/coin/${mint}`).toBase58(), mint);
+    assert.equal(parseMint(`https://dexscreener.com/solana/${mint}?embed=1`).toBase58(), mint);
+    assert.equal(parseMint(`https://solscan.io/token/${mint}#holders`).toBase58(), mint);
+    assert.throws(() => parseMint('pas-une-adresse'), /Adresse de mint invalide/);
   });
 });

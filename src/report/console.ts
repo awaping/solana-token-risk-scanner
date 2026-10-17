@@ -149,6 +149,9 @@ export function renderReport(result: ScanResult): string {
   const name = token.name ? `${token.name}${token.symbol ? ` (${token.symbol})` : ''}` : c.gray('inconnu');
   lines.push(`  Token       ${c.bold(name)}`);
   lines.push(`  Mint        ${token.mint}`);
+  if (result.resolvedFrom) {
+    lines.push(c.gray(`              retrouvé depuis l'adresse fournie (${result.resolvedFrom.kind}) : ${result.resolvedFrom.address}`));
+  }
   lines.push(
     `  Programme   ${token.programLabel} · ${token.decimals} décimales · supply ${fmtTokenAmount(token.supply, token.decimals)}`,
   );

@@ -3,7 +3,7 @@
  * Token-2022), des autorités (mint / freeze), des extensions Token-2022
  * dangereuses et des métadonnées (Metaplex ou extension TokenMetadata).
  */
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, type AccountInfo } from '@solana/web3.js';
 import {
   AccountState,
   ExtensionType,
@@ -183,9 +183,21 @@ function inspectExtensions(mint: Mint): Pick<TokenInfo, 'extensions' | 'dangerou
   return { extensions, dangerousExtensions: dangerous, transferFeeBps };
 }
 
+/** L'adresse existe mais n'est pas un mint : le compte est joint pour tenter de retrouver le mint. */
+export class NotAMintError extends Error {
+  constructor(
+    message: string,
+    readonly address: PublicKey,
+    readonly account: AccountInfo<Buffer>,
+  ) {
+    super(message);
+    this.name = 'NotAMintError';
+  }
+}
+
 /**
  * Charge et décode le mint. Lève une erreur explicite si l'adresse n'est pas
- * un mint SPL Token / Token-2022.
+ * un mint SPL Token / Token-2022 (NotAMintError si le compte existe).
  */
 export async function analyzeToken(rpc: RpcClient, mint: PublicKey): Promise<TokenInfo> {
   const metadataPda = metaplexMetadataPda(mint);
@@ -196,14 +208,14 @@ export async function analyzeToken(rpc: RpcClient, mint: PublicKey): Promise<Tok
   const programId = mintInfo.owner;
   const isToken2022 = programId.equals(TOKEN_2022_PROGRAM_ID);
   if (!isToken2022 && !programId.equals(TOKEN_PROGRAM_ID)) {
-    throw new Error(`${mint.toBase58()} n'est pas un mint SPL (propriétaire : ${programId.toBase58()})`);
+    throw new NotAMintError(`${mint.toBase58()} n'est pas un mint SPL (propriétaire : ${programId.toBase58()})`, mint, mintInfo);
   }
 
   let mintData: Mint;
   try {
     mintData = unpackMint(mint, mintInfo, programId);
   } catch {
-    throw new Error(`${mint.toBase58()} n'est pas un compte mint (s'agit-il d'un compte de token ou d'une pool ?)`);
+    throw new NotAMintError(`${mint.toBase58()} n'est pas un compte mint (s'agit-il d'un compte de token ou d'une pool ?)`, mint, mintInfo);
   }
 
   const token: TokenInfo = {
