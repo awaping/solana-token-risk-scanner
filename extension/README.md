@@ -51,8 +51,11 @@ La détection ne dépend pas d'un scraper par site : elle cherche une adresse
 Solana valide dans l'URL puis dans la page. Un site absent de la liste
 fonctionne dès qu'on l'ajoute à `content_scripts.matches` dans `manifest.json`.
 
-DexScreener et Photon exposent l'adresse de la **pool**, pas celle du token :
-l'extension le signale au lieu d'analyser le mauvais compte.
+DexScreener et Photon exposent l'adresse de la **pool**, et Axiom souvent celle
+de la **bonding curve**, pas celle du token. Le moteur vérifie le compte on-chain
+et remonte jusqu'au mint (bonding curve Pump.fun, pools PumpSwap et Raydium) ; le
+panneau indique alors le mint réellement analysé. Pour une pool d'un autre DEX,
+il explique qu'il faut ouvrir la page du token.
 
 ## Mises à jour
 

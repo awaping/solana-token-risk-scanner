@@ -7,7 +7,8 @@
  */
 import './utils/quiet-warnings.js';
 import { parseArgs } from 'node:util';
-import { configFromEnv, loadDotEnv, type ScannerConfig } from './config.js';
+import { configFromEnv, type ScannerConfig } from './config.js';
+import { loadDotEnv } from './dotenv.js';
 import { renderJson, renderReport } from './report/console.js';
 import { RpcClient } from './rpc/client.js';
 import { parseMint, scanToken, type ProgressCallback } from './scanner.js';

@@ -27,7 +27,10 @@ interface ScanModule {
 }
 interface ScanLike {
   risk: { score: number; level: 'VERT' | 'ORANGE' | 'ROUGE'; confidence: number; modules: ScanModule[] };
+  mint?: string;
   token?: { mint?: string };
+  /** Adresse de la page quand ce n'était pas le mint (bonding curve, pool) : le moteur a remonté jusqu'au token. */
+  resolvedFrom?: { address: string; kind: string };
 }
 
 const PANEL_ID = 'solana-risk-scanner-panel';
@@ -187,7 +190,14 @@ function showResult(mint: string, result: ScanLike): void {
       body.append(row);
     }
   }
-  body.append(el('div', 'mint', mint));
+  // Pages qui affichent la pool ou la bonding curve (Axiom, DexScreener, Photon) : on
+  // montre le mint réellement analysé, et d'où il a été déduit.
+  if (result.resolvedFrom && result.mint) {
+    body.append(el('div', 'muted', `Token retrouvé depuis la ${result.resolvedFrom.kind} de la page :`));
+    body.append(el('div', 'mint', result.mint));
+  } else {
+    body.append(el('div', 'mint', mint));
+  }
   render([head, body]);
 }
 
@@ -208,12 +218,9 @@ async function evaluate(): Promise<void> {
   currentMint = detection.address;
   if (dismissed.has(detection.address)) return;
 
-  // Une adresse de pool n'est pas un mint : scanner l'une pour l'autre
-  // produirait un verdict faux sur le mauvais compte.
-  if (detection.kind === 'pair') {
-    showError(`${detection.source} expose l'adresse de la pool, pas celle du token. Ouvre la page du mint pour l'analyser.`);
-    return;
-  }
+  // Adresse de pool ou de bonding curve (DexScreener, Photon, Axiom) : le moteur
+  // vérifie le compte on-chain et remonte jusqu'au mint du token (PumpSwap,
+  // Raydium, bonding curve Pump.fun), ou explique pourquoi c'est impossible.
 
   showLoading(detection);
   try {

@@ -1,7 +1,8 @@
 /**
  * Configuration d'exécution : variables d'environnement (.env) + options CLI.
+ * Sans dépendance Node : ce module est aussi empaqueté dans l'extension navigateur
+ * (le chargement du fichier .env vit dans dotenv.ts, réservé au CLI).
  */
-import { existsSync } from 'node:fs';
 
 export interface ScannerConfig {
   /** URL de l'endpoint RPC Solana. */
@@ -22,27 +23,6 @@ export interface ScannerConfig {
 
 export const DEFAULT_RPC_URL = 'https://api.mainnet-beta.solana.com';
 
-/**
- * Charge le fichier .env s'il existe (API native Node >= 20.12). Signale le
- * piège courant sous Windows : un fichier enregistré « .env.txt » par le Bloc-notes.
- */
-export function loadDotEnv(path = '.env'): void {
-  if (existsSync(path)) {
-    try {
-      process.loadEnvFile(path);
-    } catch (error) {
-      process.stderr.write(`Attention : ${path} illisible (${error instanceof Error ? error.message : String(error)})\n`);
-    }
-    return;
-  }
-  for (const wrong of [`${path}.txt`, `${path}.example.txt`]) {
-    if (existsSync(wrong)) {
-      process.stderr.write(
-        `Attention : fichier « ${wrong} » trouvé mais pas « ${path} » : il est ignoré. Renommez-le : Rename-Item ${wrong} ${path}\n`,
-      );
-    }
-  }
-}
 
 function intFromEnv(name: string, fallback: number, min = 1): number {
   const raw = process.env[name];

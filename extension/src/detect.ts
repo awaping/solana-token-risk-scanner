@@ -13,8 +13,9 @@
  *   3. Toute adresse base58 plausible trouvée dans l'URL puis dans la page.
  *
  * Attention aux adresses de PAIRE : DexScreener et Photon mettent dans l'URL
- * l'adresse de la pool, pas celle du mint. On ne devine pas — le niveau 1 les
- * marque comme telles et l'appelant décide quoi en faire.
+ * l'adresse de la pool, et Axiom souvent celle de la bonding curve. Le niveau 1
+ * les marque comme telles ; le moteur de scan vérifie le compte on-chain et
+ * remonte jusqu'au mint (src/analyzers/resolve.ts).
  */
 
 /** Alphabet base58 de Bitcoin/Solana : ni 0, ni O, ni I, ni l. */
