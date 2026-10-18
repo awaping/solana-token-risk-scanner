@@ -315,6 +315,10 @@ function watchNavigation(onChange: () => void): void {
 }
 
 void (async () => {
+  // Panneau laissé par une ancienne instance de ce script (extension rechargée ou
+  // réinstallée sans rafraîchir la page) : on le retire avant d'afficher le nôtre.
+  document.getElementById(PANEL_ID)?.remove();
+
   // Le service worker peut être endormi : `sendMessage` rejette, ou résout avec
   // une réponse partielle. Les deux doivent être sans conséquence — un réglage
   // illisible ne doit pas priver l'utilisateur du panneau.

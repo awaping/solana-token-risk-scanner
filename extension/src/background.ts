@@ -14,6 +14,7 @@ import { RpcClient } from '../../src/rpc/client.js';
 import { scanToken, parseMint } from '../../src/scanner.js';
 import type { ScanResult } from '../../src/types.js';
 import { compareVersions } from '../../src/update/version.js';
+import { toPanelResult } from './panel-result.js';
 import { ConfigError, explainRpcError, isBrowserHostile } from './rpc-errors.js';
 
 export { ConfigError, explainRpcError, isBrowserHostile };
@@ -170,7 +171,9 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
   // ferme le canal avant la réponse et l'appelant reçoit `undefined`.
   if (request.type === 'scan') {
     scan(request.mint)
-      .then((result) => sendResponse({ ok: true, result }))
+      // Résultat réduit à ce qu'affiche le panneau : un ScanResult complet contient des
+      // BigInt que la messagerie de Chrome ne sait pas sérialiser.
+      .then((result) => sendResponse({ ok: true, result: toPanelResult(result) }))
       .catch((error: unknown) =>
         sendResponse({
           ok: false,
