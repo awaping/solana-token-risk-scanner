@@ -84,7 +84,15 @@ export class MockChain {
   }
 
   /** Ajoute une transaction (la plus récente en tête de l'historique de chaque adresse). */
-  addTransaction(addresses: PublicKey[], tx: { signer: PublicKey; innerInstructions?: Json[]; blockTime?: number }): string {
+  addTransaction(
+    addresses: PublicKey[],
+    tx: {
+      signer: PublicKey;
+      innerInstructions?: Json[];
+      blockTime?: number;
+      tokenBalances?: Array<{ mint: PublicKey; owner: PublicKey; amount: bigint }>;
+    },
+  ): string {
     const signature = Keypair.generate().publicKey.toBase58() + Keypair.generate().publicKey.toBase58().slice(0, 20);
     const blockTime = tx.blockTime ?? Math.floor(Date.now() / 1000) - 86_400 * 30;
     const info: MockSignature = { signature, slot: this.slot++, blockTime, err: null };
@@ -105,7 +113,13 @@ export class MockChain {
         postBalances: [0],
         logMessages: [],
         preTokenBalances: [],
-        postTokenBalances: [],
+        postTokenBalances: (tx.tokenBalances ?? []).map((b, i) => ({
+          accountIndex: i,
+          mint: b.mint.toBase58(),
+          owner: b.owner.toBase58(),
+          programId: TOKEN_PROGRAM_ID.toBase58(),
+          uiTokenAmount: { amount: b.amount.toString(), decimals: 6, uiAmount: Number(b.amount) / 1e6, uiAmountString: String(Number(b.amount) / 1e6) },
+        })),
       },
       transaction: {
         signatures: [signature],

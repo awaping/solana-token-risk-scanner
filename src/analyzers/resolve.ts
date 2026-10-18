@@ -43,6 +43,29 @@ async function mintOfBondingCurve(rpc: RpcClient, curve: PublicKey): Promise<Pub
 }
 
 /**
+ * Repli quand la courbe ne détient plus de compte de token (token migré, compte
+ * fermé) : le mint apparaît dans les soldes de token de ses transactions.
+ */
+async function mintFromCurveHistory(rpc: RpcClient, curve: PublicKey): Promise<PublicKey | null> {
+  const signatures = await rpc.call((c) => c.getSignaturesForAddress(curve, { limit: 5 })).catch(() => []);
+  for (const { signature } of signatures) {
+    const tx = await rpc
+      .call((c) => c.getParsedTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))
+      .catch(() => null);
+    const balances = [...(tx?.meta?.preTokenBalances ?? []), ...(tx?.meta?.postTokenBalances ?? [])];
+    for (const mint of new Set(balances.map((b) => b.mint))) {
+      try {
+        const key = new PublicKey(mint);
+        if (bondingCurvePda(key).equals(curve)) return key;
+      } catch {
+        // mint illisible : ignoré
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Déduit le mint d'un compte qui n'est pas un mint. Lève une erreur explicite
  * (wallet, programme inconnu…) si ce n'est pas possible.
  */
@@ -63,7 +86,7 @@ export async function resolveMintFromAccount(rpc: RpcClient, address: PublicKey,
 
   if (owner.equals(PUMP_FUN_PROGRAM_ID)) {
     if (data.length >= 8 && data.subarray(0, 8).equals(BONDING_CURVE_DISCRIMINATOR)) {
-      const mint = await mintOfBondingCurve(rpc, address);
+      const mint = (await mintOfBondingCurve(rpc, address)) ?? (await mintFromCurveHistory(rpc, address));
       if (mint) return { mint, from: 'bonding curve Pump.fun' };
       throw new Error(`${given} est une bonding curve Pump.fun, mais son mint est introuvable : collez l'adresse du token (CA, elle finit souvent par « pump »)`);
     }

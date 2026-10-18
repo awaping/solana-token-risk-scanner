@@ -196,6 +196,19 @@ describe('adresse fournie autre que le mint : remontée jusqu’au mint', () => 
     assert.match(renderReport(result), /retrouvé depuis l'adresse fournie \(bonding curve Pump\.fun\)/);
   });
 
+  test('bonding curve dont le compte de token est fermé : mint retrouvé dans son historique', async () => {
+    const { chain, mint } = buildHealthyChain();
+    const curve = bondingCurvePda(mint);
+    // Compte de token de la courbe fermé (token migré) : seul l'historique garde la trace du mint.
+    for (const [address, account] of chain.accounts) {
+      if (account.data.length === 165 && account.data.subarray(32, 64).equals(curve.toBuffer())) chain.accounts.delete(address);
+    }
+    chain.addTransaction([curve], { signer: randomKey(), tokenBalances: [{ mint, owner: curve, amount: 0n }] });
+    const result = await scanToken(curve.toBase58(), config(await serve(chain)));
+    assert.equal(result.mint, mint.toBase58());
+    assert.equal(result.resolvedFrom?.kind, 'bonding curve Pump.fun');
+  });
+
   test('pool PumpSwap, pool Raydium AMM v4 (WSOL en base) et compte de token → mint', async () => {
     const rug = buildRugChain();
     const viaPool = await scanToken(rug.pool.toBase58(), config(await serve(rug.chain)));

@@ -24,7 +24,7 @@ function fakeChrome(calls) {
       onMessage: { addListener: () => calls.push('onMessage') },
       onStartup: listener(),
       onInstalled: listener(),
-      getManifest: () => ({ version: '1.1.0' }),
+      getManifest: () => ({ version: '1.2.0' }),
       sendMessage: async () => ({ ok: true }),
     },
     storage: { sync: { get: async (d) => d, set: async () => {} } },

@@ -73,6 +73,7 @@ const STYLE = `
 .act:hover { background: #1d4ed8; }
 .act  { margin: 10px 12px 12px; padding: 7px 12px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
 .act:hover { background: #1d4ed8; }
+.version { padding: 0 12px 8px; font-size: 10px; color: #6b7280; text-align: right; }
 `;
 
 function ensurePanel(): ShadowRoot {
@@ -103,8 +104,18 @@ function render(nodes: (Node | string)[]): void {
   const panel = document.createElement('div');
   panel.className = 'panel';
   panel.append(...nodes);
+  if (VERSION) panel.append(el('div', 'version', `Solana Token Risk Scanner ${VERSION}`));
   root.append(panel);
 }
+
+/** Version chargée : permet de vérifier d'un coup d'œil que la mise à jour est bien active. */
+const VERSION = (() => {
+  try {
+    return `v${chrome.runtime.getManifest().version}`;
+  } catch {
+    return '';
+  }
+})();
 
 function el(tag: string, className: string, text?: string): HTMLElement {
   const node = document.createElement(tag);
