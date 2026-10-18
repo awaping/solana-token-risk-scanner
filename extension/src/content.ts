@@ -32,7 +32,11 @@ interface ScanLike {
   token?: { mint?: string };
   /** Adresse de la page quand ce n'était pas le mint (bonding curve, pool) : le moteur a remonté jusqu'au token. */
   resolvedFrom?: { address: string; kind: string };
+  /** Analyses précédentes du même token, pour afficher l'évolution de la note. */
+  history?: { count: number; first: { at: number; score: number }; previous?: { at: number; score: number } };
 }
+
+type ScanResponse = { ok: true; result: ScanLike } | { ok: false; error: string; action?: 'options' | 'retry' };
 
 const PANEL_ID = 'solana-risk-scanner-panel';
 let host: HTMLElement | null = null;
@@ -89,8 +93,14 @@ const STYLE = `
 .err  { color: #fbbf24; padding: 10px 12px; font-size: 12px; line-height: 1.5; }
 .act  { margin: 10px 12px 12px; padding: 7px 12px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
 .act:hover { background: #1d4ed8; }
-.act  { margin: 10px 12px 12px; padding: 7px 12px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-.act:hover { background: #1d4ed8; }
+.icon { cursor: pointer; background: none; border: 1px solid #2a2e35; border-radius: 6px; color: #c3c7ce; font-size: 13px; line-height: 1; padding: 4px 6px; }
+.icon:hover { color: #fff; border-color: #3b414b; }
+.icon:disabled { cursor: progress; opacity: .6; }
+.busy .body { opacity: .5; }
+.hist { margin-top: 8px; padding-top: 7px; border-top: 1px solid #2a2e35; font-size: 11px; color: #8b9199; line-height: 1.5; }
+.up { color: #f87171; font-weight: 600; } .down { color: #34d399; font-weight: 600; }
+.link { cursor: pointer; background: none; border: 0; padding: 0; color: #60a5fa; font: inherit; font-size: 11px; }
+.link:hover { text-decoration: underline; }
 .version { padding: 0 12px 8px; font-size: 10px; color: #6b7280; text-align: right; }
 `;
 
@@ -181,6 +191,40 @@ function showError(message: string, action?: 'options' | 'retry'): void {
   render(nodes);
 }
 
+/** Heure courte : « 14:02 » le jour même, « 17/10 14:02 » sinon. */
+function when(at: number): string {
+  const d = new Date(at);
+  const hm = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? hm : `${d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })} ${hm}`;
+}
+
+/** Variation de note : rouge si le risque monte, vert s'il baisse. */
+function delta(now: number, before: number): HTMLElement {
+  const diff = now - before;
+  if (diff === 0) return el('span', '', '±0');
+  return el('span', diff > 0 ? 'up' : 'down', diff > 0 ? `+${diff}` : String(diff));
+}
+
+/** Ligne d'évolution : analyses précédentes de ce token, et accès à l'historique complet. */
+function historyLine(result: ScanLike, mint: string): HTMLElement {
+  const line = el('div', 'hist');
+  const h = result.history;
+  if (h && h.count >= 2 && h.previous) {
+    line.append(`Précédente : ${h.previous.score} à ${when(h.previous.at)} (`, delta(result.risk.score, h.previous.score), ')');
+    if (h.count > 2) line.append(` · 1re : ${h.first.score} à ${when(h.first.at)} (`, delta(result.risk.score, h.first.score), ')');
+    line.append(` · ${h.count} analyses · `);
+  } else if (h) {
+    line.append('Première analyse de ce token · ');
+  }
+  const open = el('button', 'link', 'Historique ›');
+  open.addEventListener('click', () => {
+    if (!extensionAlive()) return showOrphaned();
+    void chrome.runtime.sendMessage({ type: 'open-history', mint: result.mint ?? mint }).catch(() => showOrphaned());
+  });
+  line.append(open);
+  return line;
+}
+
 function showResult(mint: string, result: ScanLike): void {
   const { score, level } = result.risk;
   const cls = levelClass(level);
@@ -195,6 +239,16 @@ function showResult(mint: string, result: ScanLike): void {
   scale.append(document.createElement('br'));
   scale.append(document.createTextNode('0 = sain · 100 = danger'));
   head.append(scale);
+  // Actualiser : relit la blockchain tout de suite (sans cache) et garde la mesure dans l'historique.
+  const refresh = el('button', 'icon', '↻') as HTMLButtonElement;
+  refresh.title = 'Actualiser la note';
+  refresh.addEventListener('click', () => {
+    refresh.disabled = true;
+    refresh.textContent = '…';
+    refresh.closest('.panel')?.classList.add('busy');
+    void requestScan(mint, true);
+  });
+  head.append(refresh);
   const close = el('button', 'close', '×');
   close.addEventListener('click', () => {
     dismissed.add(mint);
@@ -241,6 +295,7 @@ function showResult(mint: string, result: ScanLike): void {
   } else {
     body.append(el('div', 'mint', mint));
   }
+  body.append(historyLine(result, mint));
   render([head, body]);
 }
 
@@ -281,20 +336,27 @@ async function evaluate(): Promise<void> {
   // Raydium, bonding curve Pump.fun), ou explique pourquoi c'est impossible.
 
   showLoading(detection);
+  await requestScan(detection.address, false);
+}
+
+/**
+ * Demande l'analyse au service worker et affiche le résultat. `force` (bouton
+ * Actualiser) ignore le cache : la blockchain est relue immédiatement.
+ */
+async function requestScan(address: string, force: boolean): Promise<void> {
   try {
-    const response = (await chrome.runtime.sendMessage({ type: 'scan', mint: detection.address })) as
-      | { ok: true; result: ScanLike }
-      | { ok: false; error: string; action?: 'options' | 'retry' };
+    if (!extensionAlive()) return showOrphaned();
+    const response = (await chrome.runtime.sendMessage({ type: 'scan', mint: address, force })) as ScanResponse;
     // La page a pu changer pendant le scan : on n'écrase pas un verdict plus récent.
-    if (currentMint !== detection.address) return;
-    if (response?.ok) showResult(detection.address, response.result);
+    if (currentMint !== address) return;
+    if (response?.ok) showResult(address, response.result);
     else showError(response?.error ?? 'analyse impossible', response?.action);
   } catch (error) {
     if (isInvalidated(error) || !extensionAlive()) {
       showOrphaned();
       return;
     }
-    if (currentMint === detection.address) {
+    if (currentMint === address) {
       showError(error instanceof Error ? error.message : String(error));
     }
   }

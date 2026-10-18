@@ -88,7 +88,9 @@ export async function analyzeDusting(
     const data = account.data;
     if (data.length < 40) continue;
     balances.push({
-      owner: new PublicKey(data.subarray(0, 32)).toBase58(),
+      // Clé d'agrégation seulement : le base64 brut évite d'encoder en base58 des
+      // dizaines de milliers d'adresses (coûteux dans le service worker).
+      owner: data.subarray(0, 32).toString('base64'),
       amount: data.readBigUInt64LE(32),
     });
   }

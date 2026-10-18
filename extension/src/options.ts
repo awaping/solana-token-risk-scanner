@@ -1,7 +1,7 @@
 /** Page d'options : réglages persistés et état de mise à jour. */
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const DEFAULTS = { rpcUrl: '', holderCensus: false, autoScan: true };
+const DEFAULTS = { rpcUrl: '', holderCensus: true, autoScan: true, autoUpdate: true };
 
 /** Endpoints publics qui répondent 403 à toute requête d'origine navigateur. */
 const BROWSER_HOSTILE = /(^|.)api.(mainnet-beta|devnet|testnet).solana.com$/;
@@ -59,25 +59,58 @@ void (async () => {
     setTimeout(() => (status.hidden = true), 2_500);
   });
 
-  const response = (await chrome.runtime.sendMessage({ type: 'update' }).catch(() => null)) as
-    | { ok: true; state: { current: string; latest?: string; url: string; hasUpdate: boolean } }
-    | null;
-  const box = $('update');
-  if (!response?.ok) {
-    box.textContent = 'Mise à jour : vérification impossible (hors ligne ?)';
-    return;
+  $('history').addEventListener('click', () => void chrome.tabs.create({ url: chrome.runtime.getURL('history.html') }));
+
+  // --- Mises à jour --------------------------------------------------------
+  type UpdateState = { current: string; latest?: string; url: string; hasUpdate: boolean; helper: 'ready' | 'missing'; autoUpdate: boolean };
+  const status = $('update-status');
+  const now = $<HTMLButtonElement>('update-now');
+  const auto = $<HTMLInputElement>('auto-update');
+  const missing = $('helper-missing');
+
+  const show = (text: string, cls = '') => {
+    status.textContent = text;
+    status.className = cls;
+  };
+
+  async function refreshUpdate(): Promise<void> {
+    show('vérification…');
+    const response = (await chrome.runtime.sendMessage({ type: 'update' }).catch(() => null)) as { ok: true; state: UpdateState } | null;
+    if (!response?.ok) {
+      show('vérification impossible (hors ligne ?)', 'warn');
+      return;
+    }
+    const state = response.state;
+    auto.checked = state.autoUpdate;
+    missing.hidden = state.helper === 'ready';
+    now.hidden = !(state.hasUpdate && state.helper === 'ready');
+    if (state.hasUpdate) show(`version ${state.current} → ${state.latest} disponible`, 'warn');
+    else show(`version ${state.current} — à jour`, 'ok');
   }
-  const { current, latest, url, hasUpdate } = response.state;
-  box.textContent = '';
-  if (hasUpdate) {
-    box.append(document.createTextNode(`Version ${current} → ${latest} disponible — `));
-    const link = document.createElement('a');
-    link.href = url;
-    link.target = '_blank';
-    link.rel = 'noreferrer';
-    link.textContent = 'télécharger';
-    box.append(link);
-  } else {
-    box.textContent = `Version ${current} — à jour`;
-  }
+
+  now.addEventListener('click', async () => {
+    now.disabled = true;
+    show('mise à jour en cours…');
+    const result = (await chrome.runtime.sendMessage({ type: 'apply-update' }).catch((error: unknown) => ({ ok: false, error: String(error) }))) as {
+      ok: boolean;
+      from?: string;
+      to?: string;
+      error?: string;
+    };
+    if (result.ok && result.to && result.to !== result.from) {
+      // L'extension redémarre : cette page se ferme avec elle.
+      show(`installée : ${result.from} → ${result.to}. Redémarrage de l'extension…`, 'ok');
+    } else if (result.ok) {
+      show('déjà à jour', 'ok');
+      now.disabled = false;
+    } else {
+      show(`échec : ${result.error ?? 'erreur inconnue'}`, 'err');
+      now.disabled = false;
+    }
+  });
+  $('update-check').addEventListener('click', () => void refreshUpdate());
+  auto.addEventListener('change', () => void chrome.storage.sync.set({ autoUpdate: auto.checked }));
+  $('copy-setup').addEventListener('click', () => void navigator.clipboard.writeText('npm run setup:updater'));
+
+  await refreshUpdate();
 })();

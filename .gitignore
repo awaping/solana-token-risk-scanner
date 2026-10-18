@@ -9,3 +9,8 @@ node_modules/
 coverage/
 .DS_Store
 .cache/
+
+# Assistant de mise à jour de l’extension (généré par npm run setup:updater)
+extension/updater/host.cmd
+extension/updater/host.sh
+extension/updater/host-manifest.json

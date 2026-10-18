@@ -25,10 +25,21 @@ function fakeChrome(calls) {
       onStartup: listener(),
       onInstalled: listener(),
       id: 'smoke-test',
-      getManifest: () => ({ version: '1.2.4' }),
+      getManifest: () => ({ version: '1.3.0' }),
+      getURL: (path) => `chrome-extension://smoke-test/${path}`,
       sendMessage: async () => ({ ok: true }),
+      sendNativeMessage: async () => {
+        throw new Error('Specified native messaging host not found.');
+      },
+      reload: () => {},
     },
-    storage: { sync: { get: async (d) => d, set: async () => {} } },
+    storage: {
+      sync: { get: async (d) => d, set: async () => {} },
+      local: { get: async () => ({}), set: async () => {}, remove: async () => {} },
+      onChanged: { addListener: () => calls.push('storage.onChanged') },
+    },
+    alarms: { create: () => {}, onAlarm: { addListener: () => calls.push('alarms') } },
+    tabs: { create: async () => ({}) },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
 }
@@ -92,6 +103,23 @@ const results = await Promise.all([
     document: { documentElement: { append() {} }, getElementById: () => null, createElement: () => ({ append() {}, addEventListener() {}, classList: {}, style: {} }) },
     history: { pushState() {}, replaceState() {} },
     addEventListener() {},
+  }),
+  smoke('historique (page)', join(ROOT, 'src/history-page.ts'), {
+    chrome: fakeChrome(calls),
+    location: { hash: '' },
+    document: {
+      title: '',
+      activeElement: null,
+      getElementById: () => ({ replaceChildren() {}, append() {} }),
+      createElement: () => ({ append() {}, addEventListener() {}, setAttribute() {}, replaceChildren() {}, classList: {}, style: {} }),
+      createElementNS: () => ({ append() {}, setAttribute() {}, addEventListener() {} }),
+    },
+    HTMLInputElement: class {},
+    addEventListener() {},
+    requestAnimationFrame: () => 0,
+    ResizeObserver: class {
+      observe() {}
+    },
   }),
 ]);
 

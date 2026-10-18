@@ -1,5 +1,5 @@
 /**
- * Build de l'extension : esbuild, trois entrées indépendantes.
+ * Build de l'extension : esbuild, quatre entrées indépendantes.
  *
  *   node extension/build.mjs            compile une fois
  *   node extension/build.mjs --watch    recompile à chaque modification
@@ -35,6 +35,7 @@ const entries = [
   { in: join(ROOT, 'src/background.ts'), out: join(ROOT, 'dist/background.js'), shims: true },
   { in: join(ROOT, 'src/content.ts'), out: join(ROOT, 'dist/content.js'), shims: false },
   { in: join(ROOT, 'src/options.ts'), out: join(ROOT, 'dist/options.js'), shims: false },
+  { in: join(ROOT, 'src/history-page.ts'), out: join(ROOT, 'dist/history.js'), shims: false },
 ];
 
 const configs = entries.map((entry) => ({

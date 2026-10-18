@@ -14,6 +14,9 @@ import { RpcClient } from '../../src/rpc/client.js';
 import { scanToken, parseMint } from '../../src/scanner.js';
 import type { ScanResult } from '../../src/types.js';
 import { compareVersions } from '../../src/update/version.js';
+import { chromeLocalStore } from './chrome-store.js';
+import { HistoryStore, type HistoryBrief } from './history-store.js';
+import { toSnapshot } from './history-snapshot.js';
 import { toPanelResult } from './panel-result.js';
 import { ConfigError, explainRpcError, isBrowserHostile, RetryableError } from './rpc-errors.js';
 
@@ -24,6 +27,8 @@ export interface Settings {
   /** Recensement complet des holders : précis mais lent et souvent bloqué. */
   holderCensus: boolean;
   autoScan: boolean;
+  /** Installe d'elle-même les nouvelles versions (nécessite l'assistant de mise à jour). */
+  autoUpdate: boolean;
 }
 
 /**
@@ -37,8 +42,11 @@ export interface Settings {
  */
 const DEFAULTS: Settings = {
   rpcUrl: '',
-  holderCensus: false,
+  // Une seule requête (getProgramAccounts réduit au propriétaire et au solde) : le
+  // dusting check en dépend, il est donc actif par défaut.
+  holderCensus: true,
   autoScan: true,
+  autoUpdate: true,
 };
 
 const REPO = 'awaping/solana-token-risk-scanner';
@@ -57,7 +65,7 @@ export async function getSettings(): Promise<Settings> {
 
 interface CacheEntry {
   at: number;
-  result: ScanResult;
+  outcome: ScanOutcome;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -67,8 +75,14 @@ const cache = new Map<string, CacheEntry>();
  * `waiters` compte les onglets qui attendent ce résultat ; quand plus aucun ne
  * l'attend (l'utilisateur est passé à un autre token), le scan est annulé.
  */
+/** Résultat d'un scan et résumé de l'historique du token (première analyse, précédente). */
+export interface ScanOutcome {
+  result: ScanResult;
+  brief?: HistoryBrief;
+}
+
 interface Flight {
-  task: Promise<ScanResult>;
+  task: Promise<ScanOutcome>;
   controller: AbortController;
   waiters: number;
 }
@@ -76,13 +90,16 @@ const inFlight = new Map<string, Flight>();
 /** Dernier token demandé par chaque onglet. */
 const tabTokens = new Map<number, string>();
 
-function remember(mint: string, result: ScanResult): void {
+/** Chaque analyse (initiale ou actualisation) est conservée pour suivre l'évolution du token. */
+const history = new HistoryStore(chromeLocalStore());
+
+function remember(mint: string, outcome: ScanOutcome): void {
   if (cache.size >= CACHE_MAX) {
     // Map conserve l'ordre d'insertion : la première clé est la plus ancienne.
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  cache.set(mint, { at: Date.now(), result });
+  cache.set(mint, { at: Date.now(), outcome });
 }
 
 /**
@@ -112,7 +129,11 @@ function release(mint: string): void {
 // Scan
 // ---------------------------------------------------------------------------
 
-export async function scan(mintArg: string, tabId?: number): Promise<ScanResult> {
+/**
+ * Analyse un token. `force` (bouton « Actualiser » du panneau) ignore le cache
+ * pour relire la blockchain tout de suite.
+ */
+export async function scan(mintArg: string, tabId?: number, force = false): Promise<ScanOutcome> {
   const mint = parseMint(mintArg).toBase58();
 
   // Token précédent de cet onglet : l'utilisateur l'a quitté, son scan peut être annulé.
@@ -123,7 +144,7 @@ export async function scan(mintArg: string, tabId?: number): Promise<ScanResult>
   }
 
   const hit = cache.get(mint);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.result;
+  if (!force && hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.outcome;
 
   const running = inFlight.get(mint);
   if (running && !running.controller.signal.aborted) {
@@ -152,9 +173,12 @@ export async function scan(mintArg: string, tabId?: number): Promise<ScanResult>
     mintHistoryMaxPages: 3,
     holderCensus: settings.holderCensus,
   }, { rpc })
-    .then((result) => {
-      remember(mint, result);
-      return result;
+    .then(async (result) => {
+      // Enregistrée avant la réponse : le panneau affiche aussitôt l'évolution de la note.
+      const brief = await history.record(toSnapshot(result)).catch(() => undefined);
+      const outcome: ScanOutcome = { result, ...(brief ? { brief } : {}) };
+      remember(mint, outcome);
+      return outcome;
     })
     .catch((error: unknown) => {
       throw explainRpcError(error, settings.rpcUrl);
@@ -171,42 +195,85 @@ export async function scan(mintArg: string, tabId?: number): Promise<ScanResult>
 // Mise à jour
 // ---------------------------------------------------------------------------
 
+/** Nom de l'assistant de mise à jour installé par `npm run setup:updater`. */
+const UPDATER = 'com.solana_risk_scanner.updater';
+const MANIFEST_URL = `https://raw.githubusercontent.com/${REPO}/main/extension/manifest.json`;
+
 export interface UpdateState {
   current: string;
   latest?: string;
   url: string;
   hasUpdate: boolean;
+  /** ready = l'assistant répond ; missing = pas installé (ou pas pour cette extension). */
+  helper: 'ready' | 'missing';
+  autoUpdate: boolean;
+}
+
+interface HelperReply {
+  ok: boolean;
+  error?: string;
+  version?: string;
+  from?: string;
+  to?: string;
+  behind?: number;
+}
+
+/** Appel à l'assistant de mise à jour ; `missing` s'il n'est pas installé. */
+async function helper(action: 'status' | 'check' | 'update'): Promise<HelperReply & { missing?: boolean }> {
+  try {
+    return (await chrome.runtime.sendNativeMessage(UPDATER, { action })) as HelperReply;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, missing: /not found|forbidden|access to the specified native messaging host/i.test(message), error: message };
+  }
 }
 
 /**
- * Compare la version de l'extension à la dernière publiée sur GitHub.
+ * Compare la version installée à celle de la branche principale du dépôt
+ * (dépôt public : simple lecture du manifest sur GitHub, sans clé).
  *
- * Note : une extension installée depuis le Chrome Web Store se met à jour
- * toute seule, sans ce code. Cette vérification sert aux installations
- * « décompressée » (chargées à la main), qui ne reçoivent jamais de mise à
- * jour automatique — c'est le cas d'une extension qu'on se distribue à soi-même.
+ * Une extension installée depuis le Chrome Web Store se met à jour seule. Une
+ * extension chargée depuis un dossier, jamais : Chrome lui interdit de
+ * réécrire ses fichiers. D'où l'assistant local, qui fait le `git pull`.
  */
 export async function checkUpdate(): Promise<UpdateState> {
   const current = chrome.runtime.getManifest().version;
-  const fallback: UpdateState = { current, url: `https://github.com/${REPO}/releases`, hasUpdate: false };
+  const [settings, status] = await Promise.all([getSettings(), helper('status')]);
+  const base = {
+    current,
+    url: `https://github.com/${REPO}`,
+    helper: status.ok ? ('ready' as const) : ('missing' as const),
+    autoUpdate: settings.autoUpdate,
+  };
   try {
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { accept: 'application/vnd.github+json' },
-    });
-    if (!res.ok) return fallback;
-    const release = (await res.json()) as { tag_name?: string; html_url?: string; draft?: boolean; prerelease?: boolean };
-    if (!release.tag_name || release.draft || release.prerelease) return fallback;
-    const latest = release.tag_name.replace(/^v/, '');
-    return {
-      current,
-      latest,
-      url: release.html_url ?? fallback.url,
-      hasUpdate: compareVersions(latest, current) > 0,
-    };
+    const res = await fetch(MANIFEST_URL, { cache: 'no-store' });
+    if (!res.ok) return { ...base, hasUpdate: false };
+    const latest = String(((await res.json()) as { version?: string }).version ?? '');
+    return { ...base, latest, hasUpdate: Boolean(latest) && compareVersions(latest, current) > 0 };
   } catch {
-    // Hors ligne ou quota d'API épuisé : jamais bloquant.
-    return fallback;
+    // Hors ligne : jamais bloquant.
+    return { ...base, hasUpdate: false };
   }
+}
+
+/** Fait récupérer la dernière version par l'assistant, puis recharge l'extension. */
+export async function applyUpdate(): Promise<{ ok: boolean; from?: string; to?: string; error?: string; missing?: boolean }> {
+  const reply = await helper('update');
+  if (!reply.ok) return { ok: false, error: reply.error, missing: reply.missing };
+  if (reply.to && reply.to !== reply.from) {
+    // Laisse le temps à la réponse de partir avant que le service worker ne redémarre.
+    setTimeout(() => chrome.runtime.reload(), 400);
+  }
+  return { ok: true, from: reply.from, to: reply.to };
+}
+
+/** Vérification au démarrage puis toutes les 3 h : pastille « MAJ », et installation si autorisée. */
+async function flagUpdate(): Promise<void> {
+  const state = await checkUpdate();
+  await chrome.action.setBadgeText({ text: state.hasUpdate ? 'MAJ' : '' });
+  if (!state.hasUpdate) return;
+  await chrome.action.setBadgeBackgroundColor({ color: '#2563eb' });
+  if (state.autoUpdate && state.helper === 'ready') await applyUpdate();
 }
 
 // ---------------------------------------------------------------------------
@@ -214,19 +281,21 @@ export async function checkUpdate(): Promise<UpdateState> {
 // ---------------------------------------------------------------------------
 
 type Request =
-  | { type: 'scan'; mint: string }
+  | { type: 'scan'; mint: string; force?: boolean }
   | { type: 'update' }
+  | { type: 'apply-update' }
   | { type: 'settings' }
-  | { type: 'open-options' };
+  | { type: 'open-options' }
+  | { type: 'open-history'; mint?: string };
 
 chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) => {
   // `sendResponse` asynchrone impose de renvoyer `true` : sans ça, Chrome
   // ferme le canal avant la réponse et l'appelant reçoit `undefined`.
   if (request.type === 'scan') {
-    scan(request.mint, _sender.tab?.id)
+    scan(request.mint, _sender.tab?.id, request.force === true)
       // Résultat réduit à ce qu'affiche le panneau : un ScanResult complet contient des
       // BigInt que la messagerie de Chrome ne sait pas sérialiser.
-      .then((result) => sendResponse({ ok: true, result: toPanelResult(result) }))
+      .then(({ result, brief }) => sendResponse({ ok: true, result: toPanelResult(result, brief) }))
       .catch((error: unknown) =>
         sendResponse({
           ok: false,
@@ -237,13 +306,26 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
     return true;
   }
   if (request.type === 'update') {
-    checkUpdate().then((state) => sendResponse({ ok: true, state }));
+    checkUpdate().then((state) => {
+      void chrome.action.setBadgeText({ text: state.hasUpdate ? 'MAJ' : '' });
+      sendResponse({ ok: true, state });
+    });
+    return true;
+  }
+  if (request.type === 'apply-update') {
+    applyUpdate().then((result) => sendResponse(result));
     return true;
   }
   if (request.type === 'open-options') {
     // Seul le contexte de l'extension peut l'ouvrir : le content script doit
     // obligatoirement passer par ce message.
     chrome.runtime.openOptionsPage();
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (request.type === 'open-history') {
+    const hash = request.mint ? `#${encodeURIComponent(request.mint)}` : '';
+    void chrome.tabs.create({ url: chrome.runtime.getURL(`history.html${hash}`) });
     sendResponse({ ok: true });
     return false;
   }
@@ -254,13 +336,13 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
   return false;
 });
 
-// Vérification au démarrage : une pastille sur l'icône, rien d'intrusif.
-chrome.runtime.onStartup?.addListener(() => void flagUpdate());
-chrome.runtime.onInstalled?.addListener(() => void flagUpdate());
-
-async function flagUpdate(): Promise<void> {
-  const state = await checkUpdate();
-  if (!state.hasUpdate) return;
-  await chrome.action.setBadgeText({ text: 'MAJ' });
-  await chrome.action.setBadgeBackgroundColor({ color: '#2563eb' });
+const ALARM = 'update-check';
+function scheduleChecks(): void {
+  chrome.alarms?.create(ALARM, { periodInMinutes: 180 });
+  void flagUpdate();
 }
+chrome.runtime.onStartup?.addListener(scheduleChecks);
+chrome.runtime.onInstalled?.addListener(scheduleChecks);
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm.name === ALARM) void flagUpdate();
+});

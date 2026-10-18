@@ -13,17 +13,36 @@
   #saved { color: #34d399; font-size: 11px; margin-left: 8px; }
   #update { margin-top: 16px; padding-top: 12px; border-top: 1px solid #2a2e35; font-size: 11px; color: #8b9199; }
   #update a { color: #60a5fa; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button.ghost { background: #1b1e23; border: 1px solid #2a2e35; color: #e8eaed; }
+  button.ghost:hover { border-color: #3b414b; }
+  .box { margin-top: 8px; padding: 8px; border-radius: 6px; background: #0e1013; border: 1px solid #2a2e35; color: #c3c7ce; font-size: 11px; line-height: 1.5; }
+  code { font-family: ui-monospace, Menlo, monospace; color: #e8eaed; }
+  .ok { color: #34d399; } .warn { color: #fbbf24; } .err { color: #f87171; }
 </style>
 <h1>Solana Token Risk Scanner</h1>
 <p class="sub">Échelle de risque : <strong>0 = sain · 100 = danger maximum</strong>.</p>
+<button id="history" class="ghost" style="margin-top:0">Historique des analyses ›</button>
 
 <label for="rpc">Endpoint RPC</label>
 <input id="rpc" type="text" spellcheck="false" placeholder="https://mainnet.helius-rpc.com/?api-key=…" />
 <p class="hint">L'endpoint public est limité en débit : une clé Helius/Triton rend l'analyse bien plus fiable. La clé reste dans ce navigateur.</p>
 
-<div class="check"><input id="census" type="checkbox" /><label for="census" style="margin:0;font-weight:400">Recensement complet des holders<p class="hint">Plus précis sur le dusting, mais lent et refusé par beaucoup de RPC.</p></label></div>
+<div class="check"><input id="census" type="checkbox" /><label for="census" style="margin:0;font-weight:400">Recensement complet des holders<p class="hint">Indispensable au dusting check (faux holders). Une requête de plus par analyse ; refusée par certains RPC publics, acceptée par les RPC privés (Helius…).</p></label></div>
 <div class="check"><input id="auto" type="checkbox" /><label for="auto" style="margin:0;font-weight:400">Analyse automatique à l'ouverture d'un token</label></div>
 
 <button id="save">Enregistrer</button><span id="saved" hidden>enregistré</span>
-<div id="update">Vérification des mises à jour…</div>
+<div id="update">
+  <div class="row"><strong style="color:#e8eaed">Mises à jour</strong><span id="update-status">vérification…</span></div>
+  <div class="row" style="margin-top:6px">
+    <button id="update-now" hidden>Mettre à jour maintenant</button>
+    <button id="update-check" class="ghost">Vérifier</button>
+  </div>
+  <div class="check" style="margin:10px 0 0"><input id="auto-update" type="checkbox" /><label for="auto-update" style="margin:0;font-weight:400;color:#e8eaed">Mise à jour automatique<p class="hint">Vérifie toutes les 3 h et installe la nouvelle version dès qu'elle est publiée.</p></label></div>
+  <div id="helper-missing" class="box" hidden>
+    Pour mettre à jour en un clic, installe une seule fois l'assistant : dans PowerShell, dans le dossier du projet,
+    lance <code>npm run setup:updater</code> <button id="copy-setup" class="ghost" style="margin:0;padding:2px 6px">copier</button>
+    puis recharge l'extension. Sans assistant : <code>git pull</code> dans le dossier, puis ↻ dans <code>chrome://extensions</code>.
+  </div>
+</div>
 <script type="module" src="dist/options.js"></script>

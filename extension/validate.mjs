@@ -54,7 +54,8 @@ if (problems.some((p) => p.includes('dist/'))) {
 
 // Un html peut référencer un script absent sans que Chrome ne le signale
 // clairement : la page d'options s'ouvre vide.
-for (const page of [manifest.options_page, manifest.action?.default_popup].filter(Boolean)) {
+// history.html n'est pas déclarée dans le manifest : elle est ouverte depuis le panneau et les réglages.
+for (const page of [manifest.options_page, manifest.action?.default_popup, 'history.html'].filter(Boolean)) {
   const file = join(ROOT, page);
   if (!existsSync(file)) continue;
   const html = readFileSync(file, 'utf8');

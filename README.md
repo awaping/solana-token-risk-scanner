@@ -10,12 +10,13 @@ Il interroge directement la blockchain via `@solana/web3.js`, sans API tierce, e
 | 🟠 **ORANGE** | 31 – 69 | Signaux d'alerte : forte concentration, liquidité faible, créateur suspect… |
 | 🔴 **ROUGE** | 70 – 100 | Pattern de manipulation avéré : wallets clonés, supply monopolisée, autorités dangereuses… |
 
-Deux modes complémentaires :
+Trois façons de l'utiliser :
 
 | Mode | Commande | Usage | Délai |
 |---|---|---|---|
 | **Scan** | `npm run scan -- <MINT>` | Audit complet d'un token donné : 6 modules on-chain | quelques secondes |
 | **Stream** | `npm run stream [blockchain]` | Surveille **tous** les nouveaux lancements en direct et affiche un **classement live des tokens actifs** (trades, volume, momentum) avec leur niveau de risque | Solana : ~20–300 µs de calcul après réception |
+| **Extension Chrome** | `extension/` | Affiche la note du token ouvert sur pump.fun, Axiom, GMGN, DexScreener… avec un bouton pour l'actualiser, garde l'historique de chaque analyse (courbe de la note) et se met à jour en un clic. Voir [extension/README.md](extension/README.md) | quelques secondes par analyse |
 
 Le mode stream fonctionne sur **19 blockchains**, soit tous les réseaux actifs sur Based Bot : **Solana** (Pump.fun) et **18 chaînes EVM** (Ethereum, Base, BNB Chain, Robinhood Chain, Arbitrum, Monad…). Il suffit de nommer la chaîne :
 

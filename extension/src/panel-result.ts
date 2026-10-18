@@ -7,6 +7,7 @@
  * sans API chrome, pour être testé avec un vrai résultat de scan.
  */
 import type { Finding, ScanResult } from '../../src/types.js';
+import type { HistoryBrief } from './history-store.js';
 
 export interface PanelResult {
   mint: string;
@@ -19,9 +20,11 @@ export interface PanelResult {
     confidence: number;
     modules: Array<{ label: string; score: number | null; findings: Finding[]; unavailableReason?: string }>;
   };
+  /** Analyses précédentes du même token (évolution de la note). */
+  history?: HistoryBrief;
 }
 
-export function toPanelResult(result: ScanResult): PanelResult {
+export function toPanelResult(result: ScanResult, history?: HistoryBrief): PanelResult {
   const { risk, token } = result;
   return {
     mint: result.mint,
@@ -42,6 +45,7 @@ export function toPanelResult(result: ScanResult): PanelResult {
         ...(m.unavailableReason ? { unavailableReason: m.unavailableReason } : {}),
       })),
     },
+    ...(history ? { history } : {}),
   };
 }
 
