@@ -38,6 +38,23 @@ let host: HTMLElement | null = null;
 let shadow: ShadowRoot | null = null;
 let currentMint: string | null = null;
 let dismissed = new Set<string>();
+/** Extension rechargée ou mise à jour pendant que la page restait ouverte : ce script est orphelin. */
+let orphaned = false;
+
+/**
+ * Vrai tant que ce script est relié à l'extension. Après un rechargement dans
+ * chrome://extensions, les onglets déjà ouverts gardent l'ancien script : tout
+ * appel à chrome.runtime y lève « Extension context invalidated ».
+ */
+function extensionAlive(): boolean {
+  try {
+    return Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+const isInvalidated = (error: unknown) => /context invalidated/i.test(error instanceof Error ? error.message : String(error));
 
 // ---------------------------------------------------------------------------
 // Panneau
@@ -146,7 +163,10 @@ function showError(message: string, action?: 'options'): void {
   const nodes: (Node | string)[] = [head, el('div', 'err', message)];
   if (action === 'options') {
     const button = el('button', 'act', 'Ouvrir les réglages');
-    button.addEventListener('click', () => void chrome.runtime.sendMessage({ type: 'open-options' }));
+    button.addEventListener('click', () => {
+      if (!extensionAlive()) return showOrphaned();
+      void chrome.runtime.sendMessage({ type: 'open-options' }).catch(() => showOrphaned());
+    });
     nodes.push(button);
   }
   render(nodes);
@@ -216,7 +236,22 @@ function showResult(mint: string, result: ScanLike): void {
 // Cycle
 // ---------------------------------------------------------------------------
 
+/** Ce script n'est plus relié à l'extension (mise à jour, rechargement) : seule la page rafraîchie le remplace. */
+function showOrphaned(): void {
+  orphaned = true;
+  const head = el('div', 'head');
+  head.append(el('span', 'level bg-orange', 'MISE À JOUR'));
+  const close = el('button', 'close', '×');
+  close.addEventListener('click', removePanel);
+  head.append(close);
+  const reload = el('button', 'act', 'Rafraîchir la page');
+  reload.addEventListener('click', () => location.reload());
+  render([head, el('div', 'err', "L'extension a été rechargée ou mise à jour : rafraîchis la page (F5) pour réactiver l'analyse."), reload]);
+}
+
 async function evaluate(): Promise<void> {
+  if (orphaned) return;
+  if (!extensionAlive()) return showOrphaned();
   const detection = detectToken(location.href, document.body?.innerText);
   if (!detection) {
     if (currentMint !== null) {
@@ -243,6 +278,10 @@ async function evaluate(): Promise<void> {
     if (response?.ok) showResult(detection.address, response.result);
     else showError(response?.error ?? 'analyse impossible', response?.action);
   } catch (error) {
+    if (isInvalidated(error) || !extensionAlive()) {
+      showOrphaned();
+      return;
+    }
     if (currentMint === detection.address) {
       showError(error instanceof Error ? error.message : String(error));
     }
