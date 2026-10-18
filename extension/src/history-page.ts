@@ -6,6 +6,7 @@
  */
 import { chromeLocalStore } from './chrome-store.js';
 import { HistoryStore, type CoinHistory, type CoinSummary, type Level, type ScanPoint } from './history-store.js';
+import { safeUrl, twitterLabel, type TwitterLink } from './socials.js';
 
 const store = new HistoryStore(chromeLocalStore());
 const app = document.getElementById('app')!;
@@ -298,6 +299,7 @@ async function renderCoin(mint: string): Promise<void> {
       h('a', { href: `https://solscan.io/token/${coin.mint}`, target: '_blank', rel: 'noreferrer' }, 'Solscan'),
       h('a', { href: `https://dexscreener.com/solana/${coin.mint}`, target: '_blank', rel: 'noreferrer' }, 'DexScreener'),
     ),
+    ...[socialsBlock(coin)].filter((node): node is HTMLElement => node !== null),
     h(
       'div',
       { class: 'tiles' },
@@ -325,6 +327,33 @@ async function renderCoin(mint: string): Promise<void> {
     ),
     h('h2', {}, 'Données brutes'),
     h('details', {}, h('summary', {}, 'Afficher le JSON complet de ce token'), h('pre', {}, JSON.stringify(coin, null, 2))),
+  );
+}
+
+/** Lien externe http(s) uniquement (le contenu des métadonnées vient du créateur du token). */
+function external(url: string | undefined, label: string): HTMLElement | null {
+  const href = safeUrl(url);
+  return href ? h('a', { href, target: '_blank', rel: 'noreferrer noopener' }, label) : null;
+}
+
+/** Dev et réseaux sociaux déclarés par le token (informatif, hors note). */
+function socialsBlock(coin: CoinHistory): HTMLElement | null {
+  const s = coin.socials;
+  if (!s) return null;
+  const items: Array<HTMLElement | null> = [
+    s.dev
+      ? h('span', {}, 'Dev : ', external(`https://pump.fun/profile/${s.dev.address}`, s.dev.username ? `@${s.dev.username}` : short(s.dev.address)), ' (', external(`https://solscan.io/account/${s.dev.address}`, 'Solscan'), ')')
+      : null,
+    s.twitter ? h('span', {}, 'X : ', external(s.twitter.url, twitterLabel(s.twitter as TwitterLink))) : null,
+    external(s.telegram, 'Telegram'),
+    s.website ? external(s.website, new URL(s.website).hostname.replace(/^www\./, '')) : null,
+  ];
+  const present = items.filter((i): i is HTMLElement => i !== null);
+  return h(
+    'div',
+    { class: 'card', style: 'margin:0 0 14px' },
+    h('div', { class: 'links' }, ...(present.length ? present : [h('span', { class: 'muted' }, 'Aucun réseau social déclaré par le token')])),
+    s.description ? h('div', { class: 'muted', style: 'margin-top:6px;white-space:normal' }, s.description) : null,
   );
 }
 

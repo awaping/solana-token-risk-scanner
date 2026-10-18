@@ -18,6 +18,7 @@ import { chromeLocalStore } from './chrome-store.js';
 import { HistoryStore, type HistoryBrief } from './history-store.js';
 import { toSnapshot } from './history-snapshot.js';
 import { toPanelResult } from './panel-result.js';
+import { extractSocials, pumpUsername, resolveMetadataUri, type DevInfo, type Socials } from './socials.js';
 import { ConfigError, explainRpcError, isBrowserHostile, RetryableError } from './rpc-errors.js';
 
 export { ConfigError, explainRpcError, isBrowserHostile, RetryableError };
@@ -192,6 +193,61 @@ export async function scan(mintArg: string, tabId?: number, force = false): Prom
 }
 
 // ---------------------------------------------------------------------------
+// Réseaux sociaux et dev (en plus de la note, jamais sur son chemin)
+// ---------------------------------------------------------------------------
+
+interface SocialsReply {
+  ok: true;
+  socials: Socials;
+  dev?: DevInfo;
+}
+
+const SOCIALS_TTL_MS = 10 * 60_000;
+const socialsCache = new Map<string, { at: number; reply: Promise<SocialsReply> }>();
+
+/** JSON d'un tiers : délai court, taille plafonnée, aucune erreur propagée. */
+async function fetchJson(url: string, timeoutMs: number, maxBytes = 64 * 1024): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal, credentials: 'omit' });
+    if (!res.ok || Number(res.headers.get('content-length') ?? 0) > maxBytes) return undefined;
+    const text = await res.text();
+    return text.length > maxBytes ? undefined : (JSON.parse(text) as unknown);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Twitter / Telegram / site du projet (fichier de métadonnées du token) et
+ * pseudo pump.fun du dev. Demandé par le panneau APRÈS l'affichage de la note :
+ * ni la note ni son délai n'en dépendent.
+ */
+function loadSocials(mint: string, uri: string | undefined, creator: string | undefined): Promise<SocialsReply> {
+  const cached = socialsCache.get(mint);
+  if (cached && Date.now() - cached.at < SOCIALS_TTL_MS) return cached.reply;
+  const reply = (async (): Promise<SocialsReply> => {
+    const metadataUrl = resolveMetadataUri(uri);
+    // Adresse validée avant d'entrer dans une URL.
+    const dev = creator ? parseMint(creator).toBase58() : undefined;
+    const [metadata, profile] = await Promise.all([
+      metadataUrl ? fetchJson(metadataUrl, 6_000) : undefined,
+      dev ? fetchJson(`https://frontend-api-v3.pump.fun/users/${dev}`, 4_000) : undefined,
+    ]);
+    const socials = extractSocials(metadata);
+    const username = pumpUsername(profile);
+    const devInfo: DevInfo | undefined = dev ? { address: dev, ...(username ? { username } : {}) } : undefined;
+    void history.attachSocials(mint, { ...socials, ...(devInfo ? { dev: devInfo } : {}), at: Date.now() }).catch(() => undefined);
+    return { ok: true, socials, ...(devInfo ? { dev: devInfo } : {}) };
+  })();
+  socialsCache.set(mint, { at: Date.now(), reply });
+  return reply;
+}
+
+// ---------------------------------------------------------------------------
 // Mise à jour
 // ---------------------------------------------------------------------------
 
@@ -286,7 +342,8 @@ type Request =
   | { type: 'apply-update' }
   | { type: 'settings' }
   | { type: 'open-options' }
-  | { type: 'open-history'; mint?: string };
+  | { type: 'open-history'; mint?: string }
+  | { type: 'socials'; mint: string; uri?: string; creator?: string };
 
 chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) => {
   // `sendResponse` asynchrone impose de renvoyer `true` : sans ça, Chrome
@@ -322,6 +379,12 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
     chrome.runtime.openOptionsPage();
     sendResponse({ ok: true });
     return false;
+  }
+  if (request.type === 'socials') {
+    loadSocials(request.mint, request.uri, request.creator)
+      .then((reply) => sendResponse(reply))
+      .catch(() => sendResponse({ ok: true, socials: {} }));
+    return true;
   }
   if (request.type === 'open-history') {
     const hash = request.mint ? `#${encodeURIComponent(request.mint)}` : '';

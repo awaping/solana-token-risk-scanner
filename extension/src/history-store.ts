@@ -58,6 +58,8 @@ export interface ScanDetail {
     decimals: number;
     /** Supply en unités brutes (texte : trop grande pour un nombre JSON). */
     supply: string;
+    /** Lien du fichier de métadonnées (réseaux sociaux, image). */
+    uri?: string;
     mintAuthority: string | null;
     freezeAuthority: string | null;
     dangerousExtensions: Array<{ name: string; detail: string; severity: Severity }>;
@@ -90,6 +92,16 @@ export interface ScanSnapshot {
   detail: ScanDetail;
 }
 
+/** Réseaux sociaux et dev, lus après l'analyse (n'entrent pas dans la note). */
+export interface CoinSocials {
+  twitter?: { handle?: string; url: string; kind: string };
+  telegram?: string;
+  website?: string;
+  description?: string;
+  dev?: { address: string; username?: string };
+  at: number;
+}
+
 export interface CoinHistory {
   mint: string;
   name?: string;
@@ -98,6 +110,7 @@ export interface CoinHistory {
   lastSeen: number;
   scans: ScanPoint[];
   latest: ScanDetail;
+  socials?: CoinSocials;
 }
 
 /** Ligne de l'index : de quoi lister les tokens sans charger tout l'historique. */
@@ -228,6 +241,15 @@ export class HistoryStore {
     const key = coinKey(mint);
     const data = await this.store.get([key]);
     return (data[key] as CoinHistory | undefined) ?? null;
+  }
+
+  /** Ajoute les réseaux sociaux et le dev à un token déjà enregistré. */
+  attachSocials(mint: string, socials: CoinSocials): Promise<void> {
+    return this.exclusive(async () => {
+      const key = coinKey(mint);
+      const coin = (await this.store.get([key]))[key] as CoinHistory | undefined;
+      if (coin) await this.store.set({ [key]: { ...coin, socials } });
+    });
   }
 
   remove(mint: string): Promise<void> {

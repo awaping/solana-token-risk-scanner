@@ -32,6 +32,8 @@ export interface TokenInfo {
   supply: bigint;
   name?: string;
   symbol?: string;
+  /** Lien du fichier de métadonnées (image, description, réseaux sociaux), souvent sur IPFS. */
+  metadataUri?: string;
   mintAuthority: string | null;
   freezeAuthority: string | null;
   metadataUpdateAuthority?: string | null;

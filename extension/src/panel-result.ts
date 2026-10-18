@@ -11,7 +11,9 @@ import type { HistoryBrief } from './history-store.js';
 
 export interface PanelResult {
   mint: string;
-  token: { mint: string; name?: string; symbol?: string };
+  token: { mint: string; name?: string; symbol?: string; uri?: string };
+  /** Adresse du créateur (dev), si identifiée. */
+  creator?: string;
   /** Adresse de la page quand ce n'était pas le mint (bonding curve, pool…). */
   resolvedFrom?: { address: string; kind: string };
   risk: {
@@ -32,7 +34,9 @@ export function toPanelResult(result: ScanResult, history?: HistoryBrief): Panel
       mint: result.mint,
       ...(token.name ? { name: token.name } : {}),
       ...(token.symbol ? { symbol: token.symbol } : {}),
+      ...(token.metadataUri ? { uri: token.metadataUri } : {}),
     },
+    ...(result.creator.status === 'ok' ? { creator: result.creator.data.address } : {}),
     ...(result.resolvedFrom ? { resolvedFrom: { address: result.resolvedFrom.address, kind: result.resolvedFrom.kind } } : {}),
     risk: {
       score: risk.score,

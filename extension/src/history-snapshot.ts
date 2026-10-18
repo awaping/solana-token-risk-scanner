@@ -70,6 +70,7 @@ export function toSnapshot(result: ScanResult, at = Date.now()): ScanSnapshot {
         program: token.programLabel,
         decimals: token.decimals,
         supply: token.supply.toString(),
+        ...(token.metadataUri ? { uri: token.metadataUri } : {}),
         mintAuthority: token.mintAuthority,
         freezeAuthority: token.freezeAuthority,
         dangerousExtensions: token.dangerousExtensions.map((e) => ({ name: e.name, detail: e.detail, severity: e.severity })),

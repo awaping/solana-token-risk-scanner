@@ -15,6 +15,7 @@
  */
 import { detectToken, type Detection } from './detect.js';
 import { describeMissingModule } from './panel-result.js';
+import { safeUrl, twitterLabel, type DevInfo, type Socials } from './socials.js';
 
 interface Finding {
   severity: 'critical' | 'warning' | 'info' | 'ok';
@@ -29,7 +30,9 @@ interface ScanModule {
 interface ScanLike {
   risk: { score: number; level: 'VERT' | 'ORANGE' | 'ROUGE'; confidence: number; modules: ScanModule[] };
   mint?: string;
-  token?: { mint?: string };
+  token?: { mint?: string; uri?: string };
+  /** Adresse du dev (créateur), si identifiée. */
+  creator?: string;
   /** Adresse de la page quand ce n'était pas le mint (bonding curve, pool) : le moteur a remonté jusqu'au token. */
   resolvedFrom?: { address: string; kind: string };
   /** Analyses précédentes du même token, pour afficher l'évolution de la note. */
@@ -101,6 +104,8 @@ const STYLE = `
 .up { color: #f87171; font-weight: 600; } .down { color: #34d399; font-weight: 600; }
 .link { cursor: pointer; background: none; border: 0; padding: 0; color: #60a5fa; font: inherit; font-size: 11px; }
 .link:hover { text-decoration: underline; }
+.socials { margin: 8px 0 4px; font-size: 12px; color: #c3c7ce; line-height: 1.5; }
+.lnk { color: #60a5fa; text-decoration: none; } .lnk:hover { text-decoration: underline; }
 .version { padding: 0 12px 8px; font-size: 10px; color: #6b7280; text-align: right; }
 `;
 
@@ -205,6 +210,72 @@ function delta(now: number, before: number): HTMLElement {
   return el('span', diff > 0 ? 'up' : 'down', diff > 0 ? `+${diff}` : String(diff));
 }
 
+/** Lien externe : uniquement http(s), ouvert dans un nouvel onglet, sans référent. */
+function anchor(url: string, label: string): HTMLElement | null {
+  const href = safeUrl(url);
+  if (!href) return null;
+  const a = document.createElement('a');
+  a.className = 'lnk';
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noreferrer noopener';
+  a.textContent = label;
+  return a;
+}
+
+const shortAddr = (address: string) => `${address.slice(0, 4)}…${address.slice(-4)}`;
+
+/**
+ * Dev et réseaux sociaux du token. Chargés APRÈS l'affichage de la note, par une
+ * demande séparée : ni la note ni son délai n'en dépendent.
+ */
+function socialsLine(result: ScanLike, address: string): HTMLElement | null {
+  const creator = result.creator;
+  const uri = result.token?.uri;
+  if (!creator && !uri) return null;
+  const line = el('div', 'socials');
+  const dev = (info?: DevInfo) => {
+    if (!creator) return [];
+    const label = info?.username ? `@${info.username}` : shortAddr(creator);
+    return ['Dev : ', anchor(`https://pump.fun/profile/${creator}`, label) ?? label];
+  };
+  line.append(...dev(), el('span', 'muted', creator ? ' · liens…' : 'liens…'));
+
+  const fill = (socials: Socials, info?: DevInfo) => {
+    const parts: (Node | string)[] = [];
+    const add = (node: Node | string | null) => {
+      if (!node) return;
+      if (parts.length) parts.push(' · ');
+      parts.push(node);
+    };
+    if (creator) {
+      const [prefix, link] = dev(info);
+      const devNode = el('span', '');
+      devNode.append(prefix as string, link as Node | string);
+      add(devNode);
+    }
+    if (socials.twitter) {
+      const x = el('span', '');
+      x.append('X : ', anchor(socials.twitter.url, twitterLabel(socials.twitter)) ?? '');
+      add(x);
+    }
+    if (socials.telegram) add(anchor(socials.telegram, 'Telegram'));
+    if (socials.website) add(anchor(socials.website, new URL(socials.website).hostname.replace(/^www\./, '')));
+    if (!socials.twitter && !socials.telegram && !socials.website) add(el('span', 'muted', 'aucun réseau déclaré'));
+    line.replaceChildren(...parts);
+  };
+
+  if (!extensionAlive()) return line;
+  void chrome.runtime
+    .sendMessage({ type: 'socials', mint: result.mint ?? address, uri, creator })
+    .then((reply: { ok?: boolean; socials?: Socials; dev?: DevInfo } | undefined) => {
+      if (currentMint !== address) return;
+      fill(reply?.socials ?? {}, reply?.dev);
+    })
+    .catch(() => fill({}));
+  return line;
+}
+
 /** Ligne d'évolution : analyses précédentes de ce token, et accès à l'historique complet. */
 function historyLine(result: ScanLike, mint: string): HTMLElement {
   const line = el('div', 'hist');
@@ -295,6 +366,8 @@ function showResult(mint: string, result: ScanLike): void {
   } else {
     body.append(el('div', 'mint', mint));
   }
+  const socials = socialsLine(result, mint);
+  if (socials) body.append(socials);
   body.append(historyLine(result, mint));
   render([head, body]);
 }

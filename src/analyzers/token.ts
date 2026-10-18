@@ -238,6 +238,7 @@ export async function analyzeToken(rpc: RpcClient, mint: PublicKey): Promise<Tok
         if (meta) {
           token.name = meta.name;
           token.symbol = meta.symbol;
+          if (meta.uri.trim()) token.metadataUri = meta.uri.trim();
           token.metadataUpdateAuthority = isSet(meta.updateAuthority) ? meta.updateAuthority.toBase58() : null;
           token.metadataMutable = token.metadataUpdateAuthority !== null;
         }
@@ -252,6 +253,7 @@ export async function analyzeToken(rpc: RpcClient, mint: PublicKey): Promise<Tok
     if (meta) {
       token.name = meta.name;
       token.symbol = meta.symbol;
+      if (meta.uri.trim()) token.metadataUri = meta.uri.trim();
       token.metadataUpdateAuthority = meta.updateAuthority;
       token.metadataMutable = meta.isMutable;
     }

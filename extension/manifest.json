@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Solana Token Risk Scanner",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsDK2JZL/9yDRV05DgGG6AGBjU134Ir4lM5TdpXEFnhZuDdVHfTRGnbof+5kHIfuRWyGJxHaqQ+SsZ4xhtaG4kpVINu/KC+ztZgngal8MXAB3NfdowBudr++0LGwWXzaOzGUEMrBN5cnQ+dpInqyoJX9PA5NeWUbGDLLOxV8kh9yJtr0vK1S80DTTnR1fbqeZvOca1CMTwz0M//JZbSyGJDvN+QEUC5Oj/eFm+8gfcCtmFpEqVTVOYAFmKF5jkcai34cd0a1EW1WZh+WeLAnHINCsgYwfubCexEsfF/MNCuw1h14EbiCkzyVAVHrHskQP66M6cK0uL0V0R4gIsPlc1QIDAQAB",
   "description": "Affiche le score de risque d'un token Solana (0 = sain, 100 = danger) par-dessus les terminaux memecoin.",
   "minimum_chrome_version": "120",
@@ -12,7 +12,13 @@
     "nativeMessaging"
   ],
   "host_permissions": [
-    "https://raw.githubusercontent.com/*"
+    "https://raw.githubusercontent.com/*",
+    "https://ipfs.io/*",
+    "https://*.mypinata.cloud/*",
+    "https://gateway.pinata.cloud/*",
+    "https://cf-ipfs.com/*",
+    "https://arweave.net/*",
+    "https://frontend-api-v3.pump.fun/*"
   ],
   "optional_host_permissions": [
     "https://*/*"

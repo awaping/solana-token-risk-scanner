@@ -65,6 +65,23 @@ s'affiche avec son évolution (« Précédente : 62 à 14:02 (+13) · 1re : 58 �
 13:40 · 3 analyses »). Une hausse s'affiche en rouge (plus risqué), une baisse
 en vert.
 
+## Dev et réseaux sociaux
+
+Sous la note, le panneau affiche le **dev** (lien vers son profil pump.fun, avec
+son pseudo quand pump.fun le fournit) et les **réseaux déclarés par le token** :
+X/Twitter (pseudo, tweet ou communauté), Telegram, site. Ils sont lus dans le
+fichier de métadonnées du token (le JSON pointé par l'URI on-chain, souvent sur
+IPFS), dont le lien est déjà récupéré pendant l'analyse : aucune requête RPC de
+plus.
+
+C'est purement informatif : ces liens sont chargés **après** l'affichage de la
+note, par une demande séparée, et n'entrent pas dans le score. Leur contenu est
+choisi par le créateur du token : seuls les liens http(s) sont affichés, le lien
+X est reconstruit à partir du pseudo, et rien n'est interprété comme du HTML.
+Le pseudo du dev vient d'un service non officiel de pump.fun : s'il ne répond
+pas, seule l'adresse du dev est affichée. Les réseaux sont aussi enregistrés
+dans l'historique (fiche du token).
+
 ## Historique des analyses
 
 Chaque analyse est conservée dans le navigateur (`chrome.storage.local`) :
