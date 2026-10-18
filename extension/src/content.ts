@@ -241,7 +241,7 @@ function socialsLine(result: ScanLike, address: string): HTMLElement | null {
   };
   line.append(...dev(), el('span', 'muted', creator ? ' · liens…' : 'liens…'));
 
-  const fill = (socials: Socials, info?: DevInfo) => {
+  const fill = (socials: Socials, info?: DevInfo, blocked?: string) => {
     const parts: (Node | string)[] = [];
     const add = (node: Node | string | null) => {
       if (!node) return;
@@ -261,16 +261,25 @@ function socialsLine(result: ScanLike, address: string): HTMLElement | null {
     }
     if (socials.telegram) add(anchor(socials.telegram, 'Telegram'));
     if (socials.website) add(anchor(socials.website, new URL(socials.website).hostname.replace(/^www\./, '')));
-    if (!socials.twitter && !socials.telegram && !socials.website) add(el('span', 'muted', 'aucun réseau déclaré'));
+    if (blocked && !socials.twitter && !socials.telegram && !socials.website) {
+      // Hébergeur des métadonnées non autorisé : on le dit, plutôt que « aucun réseau ».
+      const hint = el('span', 'muted', `réseaux non lus (${blocked}) · `);
+      const allow = el('button', 'link', 'autoriser');
+      allow.addEventListener('click', () => void chrome.runtime.sendMessage({ type: 'open-options' }).catch(() => showOrphaned()));
+      hint.append(allow);
+      add(hint);
+    } else if (!socials.twitter && !socials.telegram && !socials.website) {
+      add(el('span', 'muted', 'aucun réseau déclaré'));
+    }
     line.replaceChildren(...parts);
   };
 
   if (!extensionAlive()) return line;
   void chrome.runtime
     .sendMessage({ type: 'socials', mint: result.mint ?? address, uri, creator })
-    .then((reply: { ok?: boolean; socials?: Socials; dev?: DevInfo } | undefined) => {
+    .then((reply: { ok?: boolean; socials?: Socials; dev?: DevInfo; blocked?: string } | undefined) => {
       if (currentMint !== address) return;
-      fill(reply?.socials ?? {}, reply?.dev);
+      fill(reply?.socials ?? {}, reply?.dev, reply?.blocked);
     })
     .catch(() => fill({}));
   return line;

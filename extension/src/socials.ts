@@ -110,3 +110,34 @@ export function pumpUsername(json: unknown): string | undefined {
   const username = (json as Record<string, unknown>).username;
   return typeof username === 'string' && /^[\w.-]{1,32}$/.test(username) ? username : undefined;
 }
+
+/** Identifiant de contenu IPFS (CIDv0 « Qm… » ou CIDv1 « baf… »). */
+const CID = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{50,})$/;
+
+/**
+ * Même fichier via la passerelle IPFS publique, quand l'hébergeur d'origine est
+ * une passerelle IPFS (chemin /ipfs/<cid> ou sous-domaine <cid>.ipfs.…) : elle
+ * est autorisée par l'extension et sert le contenu à l'identique.
+ */
+export function ipfsFallback(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'ipfs.io') return undefined;
+    const [sub] = parsed.hostname.split('.');
+    if (sub && CID.test(sub) && parsed.hostname.includes('.ipfs.')) return `https://ipfs.io/ipfs/${sub}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+    const match = /\/ipfs\/([^/?#]+)(\/[^?#]*)?/.exec(parsed.pathname);
+    if (match && CID.test(match[1]!)) return `https://ipfs.io/ipfs/${match[1]}${match[2] ?? ''}`;
+  } catch {
+    // URL illisible
+  }
+  return undefined;
+}
+
+/** Adresses à essayer pour lire les métadonnées : l'originale, puis la passerelle IPFS publique. */
+export function metadataCandidates(uri: string | undefined): string[] {
+  const primary = resolveMetadataUri(uri);
+  if (!primary) return [];
+  const fallback = ipfsFallback(primary);
+  return fallback && fallback !== primary ? [primary, fallback] : [primary];
+}

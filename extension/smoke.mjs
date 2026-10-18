@@ -25,7 +25,7 @@ function fakeChrome(calls) {
       onStartup: listener(),
       onInstalled: listener(),
       id: 'smoke-test',
-      getManifest: () => ({ version: '1.3.1' }),
+      getManifest: () => ({ version: '1.3.2' }),
       getURL: (path) => `chrome-extension://smoke-test/${path}`,
       sendMessage: async () => ({ ok: true }),
       sendNativeMessage: async () => {
@@ -40,6 +40,7 @@ function fakeChrome(calls) {
     },
     alarms: { create: () => {}, onAlarm: { addListener: () => calls.push('alarms') } },
     tabs: { create: async () => ({}) },
+    permissions: { contains: async () => false, request: async () => false, onAdded: { addListener: () => {} } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
 }

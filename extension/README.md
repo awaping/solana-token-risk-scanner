@@ -82,6 +82,15 @@ Le pseudo du dev vient d'un service non officiel de pump.fun : s'il ne répond
 pas, seule l'adresse du dev est affichée. Les réseaux sont aussi enregistrés
 dans l'historique (fiche du token).
 
+Les fichiers de métadonnées sont hébergés chez des services très variés (IPFS,
+Arweave, outils de lancement comme j7tracker…). Les plus courants sont autorisés
+d'office ; un fichier IPFS servi par une autre passerelle est relu via
+`ipfs.io`. Pour un hébergeur non autorisé, l'extension ne tente pas la lecture
+(Chrome la bloquerait et l'inscrirait dans les erreurs de l'extension) : le
+panneau affiche « réseaux non lus (hébergeur) · autoriser ». Le bouton
+**Autoriser tous les hébergeurs** des réglages lève cette limite en une fois
+(les requêtes partent sans cookies).
+
 ## Historique des analyses
 
 Chaque analyse est conservée dans le navigateur (`chrome.storage.local`) :

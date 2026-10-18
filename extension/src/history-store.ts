@@ -99,6 +99,8 @@ export interface CoinSocials {
   website?: string;
   description?: string;
   dev?: { address: string; username?: string };
+  /** Hébergeur des métadonnées non autorisé : réseaux non lus (et non pas absents). */
+  blocked?: string;
   at: number;
 }
 

@@ -61,6 +61,23 @@ void (async () => {
 
   $('history').addEventListener('click', () => void chrome.tabs.create({ url: chrome.runtime.getURL('history.html') }));
 
+  // --- Hébergeurs de métadonnées -------------------------------------------
+  // Les métadonnées d'un token (réseaux sociaux) sont hébergées n'importe où : sans
+  // autorisation, Chrome bloque la lecture. Demandée ici car elle exige un clic.
+  const ALL_HOSTS = { origins: ['https://*/*'] };
+  const allowStatus = $('allow-status');
+  const allowAll = $<HTMLButtonElement>('allow-all');
+  const showAllow = (granted: boolean) => {
+    allowAll.hidden = granted;
+    allowStatus.textContent = granted ? 'tous les hébergeurs sont autorisés ✔' : '';
+  };
+  showAllow(await chrome.permissions.contains(ALL_HOSTS).catch(() => false));
+  allowAll.addEventListener('click', async () => {
+    const granted = await chrome.permissions.request(ALL_HOSTS).catch(() => false);
+    showAllow(granted);
+    if (!granted) allowStatus.textContent = 'autorisation refusée';
+  });
+
   // --- Mises à jour --------------------------------------------------------
   type UpdateState = { current: string; latest?: string; url: string; hasUpdate: boolean; helper: 'ready' | 'missing'; autoUpdate: boolean };
   const status = $('update-status');

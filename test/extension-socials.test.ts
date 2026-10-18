@@ -8,7 +8,7 @@ import type { Server } from 'node:http';
 import { HistoryStore, type KeyValueStore } from '../extension/src/history-store.js';
 import { toSnapshot } from '../extension/src/history-snapshot.js';
 import { toPanelResult } from '../extension/src/panel-result.js';
-import { extractSocials, parseTwitter, pumpUsername, resolveMetadataUri, safeUrl, twitterLabel } from '../extension/src/socials.js';
+import { extractSocials, ipfsFallback, metadataCandidates, parseTwitter, pumpUsername, resolveMetadataUri, safeUrl, twitterLabel } from '../extension/src/socials.js';
 import { scanToken } from '../src/scanner.js';
 import { startMockRpc } from './fixtures/mock-rpc.js';
 import { buildHealthyChain } from './fixtures/scenarios.js';
@@ -55,6 +55,19 @@ test('JSON pump.fun ou Metaplex : twitter, telegram, site, description ; valeurs
   assert.equal(pumpUsername({ username: 'dev_01' }), 'dev_01');
   assert.equal(pumpUsername({ username: '<img src=x>' }), undefined);
   assert.equal(pumpUsername(null), undefined);
+});
+
+test('hébergeur non autorisé : repli sur la passerelle IPFS publique quand c’est un fichier IPFS', () => {
+  const cid = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+  const cidV1 = 'bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy';
+  assert.equal(ipfsFallback(`https://pump.mypinata.cloud/ipfs/${cid}`), `https://ipfs.io/ipfs/${cid}`);
+  assert.equal(ipfsFallback(`https://gw.example/ipfs/${cid}/meta.json?x=1`), `https://ipfs.io/ipfs/${cid}/meta.json`);
+  assert.equal(ipfsFallback(`https://${cidV1}.ipfs.dweb.link/`), `https://ipfs.io/ipfs/${cidV1}`);
+  assert.equal(ipfsFallback(`https://ipfs.io/ipfs/${cid}`), undefined, 'déjà la passerelle publique');
+  assert.equal(ipfsFallback('https://metadata.j7tracker.io/metadata/VoBD45SnYb.json'), undefined, 'pas un fichier IPFS');
+  assert.deepEqual(metadataCandidates(`https://cdn.example/ipfs/${cid}`), [`https://cdn.example/ipfs/${cid}`, `https://ipfs.io/ipfs/${cid}`]);
+  assert.deepEqual(metadataCandidates('https://metadata.j7tracker.io/metadata/VoBD45SnYb.json'), ['https://metadata.j7tracker.io/metadata/VoBD45SnYb.json']);
+  assert.deepEqual(metadataCandidates('javascript:alert(1)'), []);
 });
 
 const servers: Server[] = [];

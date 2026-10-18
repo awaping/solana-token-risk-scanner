@@ -352,7 +352,13 @@ function socialsBlock(coin: CoinHistory): HTMLElement | null {
   return h(
     'div',
     { class: 'card', style: 'margin:0 0 14px' },
-    h('div', { class: 'links' }, ...(present.length ? present : [h('span', { class: 'muted' }, 'Aucun réseau social déclaré par le token')])),
+    h(
+      'div',
+      { class: 'links' },
+      ...(present.length
+        ? present
+        : [h('span', { class: 'muted' }, s.blocked ? `Réseaux non lus : hébergeur ${s.blocked} non autorisé (réglages de l'extension)` : 'Aucun réseau social déclaré par le token')]),
+    ),
     s.description ? h('div', { class: 'muted', style: 'margin-top:6px;white-space:normal' }, s.description) : null,
   );
 }

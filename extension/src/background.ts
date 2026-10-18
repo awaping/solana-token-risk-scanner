@@ -18,7 +18,7 @@ import { chromeLocalStore } from './chrome-store.js';
 import { HistoryStore, type HistoryBrief } from './history-store.js';
 import { toSnapshot } from './history-snapshot.js';
 import { toPanelResult } from './panel-result.js';
-import { extractSocials, pumpUsername, resolveMetadataUri, type DevInfo, type Socials } from './socials.js';
+import { extractSocials, metadataCandidates, pumpUsername, type DevInfo, type Socials } from './socials.js';
 import { ConfigError, explainRpcError, isBrowserHostile, RetryableError } from './rpc-errors.js';
 
 export { ConfigError, explainRpcError, isBrowserHostile, RetryableError };
@@ -200,6 +200,36 @@ interface SocialsReply {
   ok: true;
   socials: Socials;
   dev?: DevInfo;
+  /** Hébergeur des métadonnées que l'extension n'a pas le droit de lire (à autoriser dans les réglages). */
+  blocked?: string;
+}
+
+/**
+ * L'extension a-t-elle le droit de lire cette origine ? Sans ce droit, Chrome
+ * bloque la requête (CORS) ET l'inscrit dans les erreurs de l'extension : on ne
+ * la lance donc pas du tout.
+ */
+async function mayFetch(url: string): Promise<boolean> {
+  try {
+    return await chrome.permissions.contains({ origins: [`${new URL(url).origin}/*`] });
+  } catch {
+    return false;
+  }
+}
+
+/** Métadonnées du token : hébergeur d'origine, sinon passerelle IPFS publique, si autorisés. */
+async function loadMetadata(uri: string | undefined): Promise<{ json?: unknown; blocked?: string }> {
+  const candidates = metadataCandidates(uri);
+  let blocked: string | undefined;
+  for (const url of candidates) {
+    if (!(await mayFetch(url))) {
+      blocked ??= new URL(url).hostname;
+      continue;
+    }
+    const json = await fetchJson(url, 6_000);
+    if (json !== undefined) return { json };
+  }
+  return blocked ? { blocked } : {};
 }
 
 const SOCIALS_TTL_MS = 10 * 60_000;
@@ -230,18 +260,19 @@ function loadSocials(mint: string, uri: string | undefined, creator: string | un
   const cached = socialsCache.get(mint);
   if (cached && Date.now() - cached.at < SOCIALS_TTL_MS) return cached.reply;
   const reply = (async (): Promise<SocialsReply> => {
-    const metadataUrl = resolveMetadataUri(uri);
     // Adresse validée avant d'entrer dans une URL.
     const dev = creator ? parseMint(creator).toBase58() : undefined;
     const [metadata, profile] = await Promise.all([
-      metadataUrl ? fetchJson(metadataUrl, 6_000) : undefined,
+      loadMetadata(uri),
       dev ? fetchJson(`https://frontend-api-v3.pump.fun/users/${dev}`, 4_000) : undefined,
     ]);
-    const socials = extractSocials(metadata);
+    const socials = extractSocials(metadata.json);
     const username = pumpUsername(profile);
     const devInfo: DevInfo | undefined = dev ? { address: dev, ...(username ? { username } : {}) } : undefined;
-    void history.attachSocials(mint, { ...socials, ...(devInfo ? { dev: devInfo } : {}), at: Date.now() }).catch(() => undefined);
-    return { ok: true, socials, ...(devInfo ? { dev: devInfo } : {}) };
+    void history
+      .attachSocials(mint, { ...socials, ...(devInfo ? { dev: devInfo } : {}), ...(metadata.blocked ? { blocked: metadata.blocked } : {}), at: Date.now() })
+      .catch(() => undefined);
+    return { ok: true, socials, ...(devInfo ? { dev: devInfo } : {}), ...(metadata.blocked ? { blocked: metadata.blocked } : {}) };
   })();
   socialsCache.set(mint, { at: Date.now(), reply });
   return reply;
@@ -398,6 +429,9 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
   }
   return false;
 });
+
+// Nouveaux hébergeurs autorisés dans les réglages : les réseaux sont relus tout de suite.
+chrome.permissions?.onAdded?.addListener(() => socialsCache.clear());
 
 const ALARM = 'update-check';
 function scheduleChecks(): void {
