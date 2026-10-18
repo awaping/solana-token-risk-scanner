@@ -15,9 +15,9 @@ import { scanToken, parseMint } from '../../src/scanner.js';
 import type { ScanResult } from '../../src/types.js';
 import { compareVersions } from '../../src/update/version.js';
 import { toPanelResult } from './panel-result.js';
-import { ConfigError, explainRpcError, isBrowserHostile } from './rpc-errors.js';
+import { ConfigError, explainRpcError, isBrowserHostile, RetryableError } from './rpc-errors.js';
 
-export { ConfigError, explainRpcError, isBrowserHostile };
+export { ConfigError, explainRpcError, isBrowserHostile, RetryableError };
 
 export interface Settings {
   rpcUrl: string;
@@ -61,8 +61,20 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
-/** Scans en vol : deux onglets sur le même token partagent la même requête. */
-const inFlight = new Map<string, Promise<ScanResult>>();
+
+/**
+ * Scans en vol : deux onglets sur le même token partagent la même requête.
+ * `waiters` compte les onglets qui attendent ce résultat ; quand plus aucun ne
+ * l'attend (l'utilisateur est passé à un autre token), le scan est annulé.
+ */
+interface Flight {
+  task: Promise<ScanResult>;
+  controller: AbortController;
+  waiters: number;
+}
+const inFlight = new Map<string, Flight>();
+/** Dernier token demandé par chaque onglet. */
+const tabTokens = new Map<number, string>();
 
 function remember(mint: string, result: ScanResult): void {
   if (cache.size >= CACHE_MAX) {
@@ -73,18 +85,53 @@ function remember(mint: string, result: ScanResult): void {
   cache.set(mint, { at: Date.now(), result });
 }
 
+/**
+ * Un seul client RPC par endpoint, partagé par tous les scans : le plafond de
+ * débit vaut pour l'ensemble des onglets, pas pour chaque analyse séparément.
+ * 8 requêtes/s laisse de la marge sous la limite des offres gratuites (≈ 10/s).
+ */
+const clients = new Map<string, RpcClient>();
+function clientFor(url: string): RpcClient {
+  let client = clients.get(url);
+  if (!client) {
+    client = new RpcClient({ url, concurrency: 3, maxRetries: 4, maxRps: 8 });
+    clients.set(url, client);
+  }
+  return client;
+}
+
+/** L'onglet ne regarde plus ce token : son scan est annulé si personne d'autre ne l'attend. */
+function release(mint: string): void {
+  const flight = inFlight.get(mint);
+  if (!flight) return;
+  flight.waiters--;
+  if (flight.waiters <= 0) flight.controller.abort();
+}
+
 // ---------------------------------------------------------------------------
 // Scan
 // ---------------------------------------------------------------------------
 
-export async function scan(mintArg: string): Promise<ScanResult> {
+export async function scan(mintArg: string, tabId?: number): Promise<ScanResult> {
   const mint = parseMint(mintArg).toBase58();
+
+  // Token précédent de cet onglet : l'utilisateur l'a quitté, son scan peut être annulé.
+  const previous = tabId !== undefined ? tabTokens.get(tabId) : undefined;
+  if (tabId !== undefined) {
+    tabTokens.set(tabId, mint);
+    if (previous && previous !== mint) release(previous);
+  }
 
   const hit = cache.get(mint);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.result;
 
   const running = inFlight.get(mint);
-  if (running) return running;
+  if (running && !running.controller.signal.aborted) {
+    // Même onglet qui redemande le même token : il est déjà compté parmi les attentes.
+    const alreadyWaiting = tabId !== undefined && previous === mint;
+    if (!alreadyWaiting) running.waiters++;
+    return running.task;
+  }
 
   const settings = await getSettings();
   if (!settings.rpcUrl.trim()) {
@@ -93,12 +140,15 @@ export async function scan(mintArg: string): Promise<ScanResult> {
     );
   }
 
-  const rpc = new RpcClient({ url: settings.rpcUrl, concurrency: 4, maxRetries: 3 });
+  const controller = new AbortController();
+  const rpc = clientFor(settings.rpcUrl).scoped(controller.signal);
   const task = scanToken(mint, {
     rpcUrl: settings.rpcUrl,
-    concurrency: 4,
-    maxRetries: 3,
-    creatorTxScanLimit: 100,
+    concurrency: 3,
+    maxRetries: 4,
+    // 30 transactions suffisent à repérer un déployeur en série, pour ~3 fois
+    // moins de requêtes que l'historique complet du CLI (offres RPC gratuites).
+    creatorTxScanLimit: 30,
     mintHistoryMaxPages: 3,
     holderCensus: settings.holderCensus,
   }, { rpc })
@@ -106,11 +156,14 @@ export async function scan(mintArg: string): Promise<ScanResult> {
       remember(mint, result);
       return result;
     })
+    .catch((error: unknown) => {
+      throw explainRpcError(error, settings.rpcUrl);
+    })
     .finally(() => {
-      inFlight.delete(mint);
+      if (inFlight.get(mint)?.task === task) inFlight.delete(mint);
     });
 
-  inFlight.set(mint, task);
+  inFlight.set(mint, { task, controller, waiters: 1 });
   return task;
 }
 
@@ -170,7 +223,7 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
   // `sendResponse` asynchrone impose de renvoyer `true` : sans ça, Chrome
   // ferme le canal avant la réponse et l'appelant reçoit `undefined`.
   if (request.type === 'scan') {
-    scan(request.mint)
+    scan(request.mint, _sender.tab?.id)
       // Résultat réduit à ce qu'affiche le panneau : un ScanResult complet contient des
       // BigInt que la messagerie de Chrome ne sait pas sérialiser.
       .then((result) => sendResponse({ ok: true, result: toPanelResult(result) }))
@@ -178,7 +231,7 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
         sendResponse({
           ok: false,
           error: error instanceof Error ? error.message : String(error),
-          action: error instanceof ConfigError ? error.action : undefined,
+          action: error instanceof ConfigError || error instanceof RetryableError ? error.action : undefined,
         }),
       );
     return true;

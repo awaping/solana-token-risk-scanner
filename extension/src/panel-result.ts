@@ -44,3 +44,21 @@ export function toPanelResult(result: ScanResult): PanelResult {
     },
   };
 }
+
+/**
+ * Raison lisible d'un module non analysé, pour le bandeau « Note incomplète ».
+ * Le moteur formule ses raisons pour le terminal (« --no-census ») : on les
+ * traduit en geste possible dans l'extension, sans accuser le RPC à tort.
+ */
+export function describeMissingModule(reason?: string): string {
+  if (!reason) return 'indisponible';
+  if (/recensement désactivé/i.test(reason)) {
+    return 'recensement des holders désactivé dans les réglages (case « Recensement complet des holders »)';
+  }
+  if (/dépend du module holders/i.test(reason)) return "dépend de l'analyse des holders, elle-même indisponible";
+  if (/\b429\b|too many|saturé|rate.?limit/i.test(reason)) return 'RPC saturé (429) : réessaie dans quelques secondes';
+  if (/indexed|not supported|unsupported|excluded|method not found|-32601|-32010/i.test(reason)) {
+    return 'ton RPC refuse cette méthode : il faut un fournisseur qui la supporte (Helius, Alchemy, QuickNode)';
+  }
+  return reason.length > 120 ? `${reason.slice(0, 117)}…` : reason;
+}

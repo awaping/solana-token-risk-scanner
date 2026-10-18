@@ -5,7 +5,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
-import { toPanelResult } from '../extension/src/panel-result.js';
+import { describeMissingModule, toPanelResult } from '../extension/src/panel-result.js';
 import { bondingCurvePda } from '../src/analyzers/pumpfun.js';
 import { scanToken } from '../src/scanner.js';
 import { startMockRpc } from './fixtures/mock-rpc.js';
@@ -36,4 +36,11 @@ test('résultat du panneau sérialisable en JSON, sans perte, y compris le mint 
   assert.equal(panel.resolvedFrom?.kind, 'bonding curve Pump.fun');
   assert.equal(panel.risk.score, result.risk.score);
   assert.equal(panel.risk.modules.length, result.risk.modules.length);
+});
+
+test('bandeau « note incomplète » : la vraie raison, pas un RPC accusé à tort', () => {
+  assert.match(describeMissingModule('recensement désactivé (--no-census / HOLDER_CENSUS=false)'), /désactivé dans les réglages/);
+  assert.match(describeMissingModule('RPC saturé (429)'), /réessaie/);
+  assert.match(describeMissingModule('Method getProgramAccounts is not supported (indexed)'), /refuse cette méthode/);
+  assert.equal(describeMissingModule('autre raison'), 'autre raison');
 });

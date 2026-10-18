@@ -95,7 +95,7 @@ test('les caractères hors base58 ne forment pas une adresse', () => {
 // Endpoints RPC hostiles au navigateur
 // ---------------------------------------------------------------------------
 
-import { isBrowserHostile, explainRpcError, ConfigError } from '../extension/src/rpc-errors.js';
+import { isBrowserHostile, explainRpcError, ConfigError, RetryableError } from '../extension/src/rpc-errors.js';
 
 test('les endpoints publics Solana sont reconnus comme hostiles au navigateur', () => {
   // Vérifié par requête réelle : 200 sans Origin, 403 avec un Origin
@@ -136,6 +136,7 @@ test('les autres pannes RPC restent distinctes', () => {
   const url = 'https://mainnet.helius-rpc.com/?api-key=x';
   assert.match(explainRpcError(new Error('401 Unauthorized'), url).message, /invalide ou absente/);
   assert.match(explainRpcError(new Error('429 Too Many Requests'), url).message, /limite le débit/);
+  assert.equal((explainRpcError(new Error('429 Too Many Requests'), url) as RetryableError).action, 'retry');
   assert.match(explainRpcError(new Error('Failed to fetch'), url).message, /injoignable/);
   // Une erreur inconnue est transmise telle quelle plutôt que travestie.
   const unknown = new Error('bizarrerie inattendue');

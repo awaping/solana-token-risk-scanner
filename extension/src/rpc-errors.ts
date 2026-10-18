@@ -23,6 +23,11 @@ export class ConfigError extends Error {
   readonly action = 'options' as const;
 }
 
+/** Échec passager (limite de débit) : le panneau propose de relancer l'analyse. */
+export class RetryableError extends Error {
+  readonly action = 'retry' as const;
+}
+
 /**
  * Traduit une panne RPC en phrase actionnable.
  *
@@ -50,7 +55,9 @@ export function explainRpcError(error: unknown, rpcUrl: string): Error {
     return new ConfigError(`${host} : clé d'API invalide ou absente (401).`);
   }
   if (/\b429\b|rate.?limit|too many/i.test(message)) {
-    return new Error(`${host} limite le débit (429). Réessaie, ou passe sur un RPC moins sollicité.`);
+    return new RetryableError(
+      `${host} limite le débit (429) : trop de requêtes en peu de temps (offre gratuite ≈ 10 par seconde). Attends quelques secondes puis réessaie.`,
+    );
   }
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
     return new Error(`${host} injoignable. Vérifie l'URL et ta connexion.`);

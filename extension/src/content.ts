@@ -14,6 +14,7 @@
  *     D'où la surveillance de l'historique.
  */
 import { detectToken, type Detection } from './detect.js';
+import { describeMissingModule } from './panel-result.js';
 
 interface Finding {
   severity: 'critical' | 'warning' | 'info' | 'ok';
@@ -153,7 +154,7 @@ function showLoading(detection: Detection): void {
  * ouvrir les réglages, pas laisser deviner. Afficher la réponse JSON brute du
  * RPC — « 403 : {"jsonrpc":"2.0",… } » — n'apprend rien à personne.
  */
-function showError(message: string, action?: 'options'): void {
+function showError(message: string, action?: 'options' | 'retry'): void {
   const head = el('div', 'head');
   head.append(el('span', 'level bg-orange', 'ERREUR'));
   const close = el('button', 'close', '×');
@@ -161,6 +162,14 @@ function showError(message: string, action?: 'options'): void {
   head.append(close);
 
   const nodes: (Node | string)[] = [head, el('div', 'err', message)];
+  if (action === 'retry') {
+    const button = el('button', 'act', 'Réessayer');
+    button.addEventListener('click', () => {
+      currentMint = null;
+      void evaluate();
+    });
+    nodes.push(button);
+  }
   if (action === 'options') {
     const button = el('button', 'act', 'Ouvrir les réglages');
     button.addEventListener('click', () => {
@@ -199,11 +208,10 @@ function showResult(mint: string, result: ScanLike): void {
   // se lit comme « sain », alors que la mesure la plus importante manque.
   const missing = result.risk.modules.filter((m) => m.score === null);
   if (missing.length > 0) {
-    const names = missing.map((m) => m.label).join(", ");
+    // Chaque module manquant avec SA raison : un réglage désactivé n'est pas un RPC défaillant.
+    const details = missing.map((m) => `${m.label} — ${describeMissingModule(m.unavailableReason)}`).join(' · ');
     const coverage = Math.round((result.risk.confidence ?? 0) * 100);
-    body.append(
-      el('div', 'warn', `Note incomplète (${coverage} % de couverture) — non analysé : ${names}. Ton RPC refuse les méthodes indexées : il faut un fournisseur qui les supporte (Helius, Alchemy, QuickNode).`),
-    );
+    body.append(el('div', 'warn', `Note incomplète (${coverage} % de couverture). Non analysé : ${details}.`));
   }
 
   const findings = result.risk.modules
@@ -272,7 +280,7 @@ async function evaluate(): Promise<void> {
   try {
     const response = (await chrome.runtime.sendMessage({ type: 'scan', mint: detection.address })) as
       | { ok: true; result: ScanLike }
-      | { ok: false; error: string; action?: 'options' };
+      | { ok: false; error: string; action?: 'options' | 'retry' };
     // La page a pu changer pendant le scan : on n'écrase pas un verdict plus récent.
     if (currentMint !== detection.address) return;
     if (response?.ok) showResult(detection.address, response.result);

@@ -10,7 +10,7 @@ import {
   RAYDIUM_AMM_V4_AUTHORITY,
   SYSTEM_PROGRAM_ID,
 } from '../src/constants.js';
-import { createLimiter, isTransientError } from '../src/rpc/client.js';
+import { createLimiter, isTransientError, RpcAbortedError, RpcClient } from '../src/rpc/client.js';
 import { describeError } from '../src/scanner.js';
 import { encodeMetaplexMetadata } from './fixtures/encoders.js';
 import { padEndVisible, sanitizeLabel, truncateVisible, visibleLength } from '../src/utils/format.js';
@@ -95,4 +95,39 @@ test('largeur terminal : emoji et idéogrammes sur 2 colonnes, caractères invis
   assert.equal(truncateVisible('\u001b[1mABCDEF\u001b[0m', 3), '\u001b[1mABC\u001b[0m');
   assert.equal(padEndVisible('🐸A', 5), '🐸A  ');
   assert.equal(sanitizeLabel(' Evil‮Coin\u0007 ​'), 'EvilCoin');
+});
+
+test('RpcClient : plafond de requêtes par seconde partagé entre les vues scoped()', async () => {
+  const client = new RpcClient({ url: 'http://127.0.0.1:1', concurrency: 8, maxRetries: 0, maxRps: 20 });
+  const a = client.scoped(new AbortController().signal);
+  const b = client.scoped(new AbortController().signal);
+  const started = Date.now();
+  // 6 requêtes réparties sur deux vues : 5 intervalles de 50 ms au minimum.
+  await Promise.all([0, 1, 2].flatMap(() => [a.call(async () => 1), b.call(async () => 2)]));
+  assert.ok(Date.now() - started >= 230, `${Date.now() - started} ms`);
+});
+
+test('RpcClient : une analyse annulée n’envoie plus de requêtes', async () => {
+  const client = new RpcClient({ url: 'http://127.0.0.1:1', concurrency: 1, maxRetries: 0 });
+  const controller = new AbortController();
+  const view = client.scoped(controller.signal);
+  let sent = 0;
+  controller.abort();
+  await assert.rejects(view.call(async () => ++sent), RpcAbortedError);
+  assert.equal(sent, 0);
+  // Le client d'origine n'est pas concerné par l'annulation de la vue.
+  assert.equal(await client.call(async () => 'ok'), 'ok');
+});
+
+test('RpcClient : un 429 est rejoué après une pause', async () => {
+  const client = new RpcClient({ url: 'http://127.0.0.1:1', concurrency: 1, maxRetries: 1 });
+  let attempts = 0;
+  const started = Date.now();
+  const value = await client.call(async () => {
+    if (++attempts === 1) throw new Error('429 Too Many Requests');
+    return 'ok';
+  });
+  assert.equal(value, 'ok');
+  assert.equal(attempts, 2);
+  assert.ok(Date.now() - started >= 950, 'pause d’au moins 1 s après un 429');
 });

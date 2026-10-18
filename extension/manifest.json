@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Solana Token Risk Scanner",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Affiche le score de risque d'un token Solana (0 = sain, 100 = danger) par-dessus les terminaux memecoin.",
   "minimum_chrome_version": "120",
   "permissions": [
