@@ -135,3 +135,41 @@ test('dusting massif : finding critique', () => {
   assert.equal(dust?.score, 100);
   assert.ok(dust?.findings.some((f) => f.severity === 'critical'));
 });
+
+/** Constats affichés (critiques et alertes), tous modules confondus. */
+const alerts = (risk: ReturnType<typeof computeRiskScore>) =>
+  risk.modules.flatMap((m) => m.findings).filter((f) => f.severity === 'critical' || f.severity === 'warning').map((f) => f.message);
+
+test('pas de répétition : le plus gros wallet n’est cité qu’une fois, les autres baleines à part', () => {
+  const top = holder(38.66);
+  const risk = computeRiskScore(
+    input([top, holder(18.32), holder(9.81), holder(6.37), ...zipfHolders(8, 0.8)], {
+      creator: { status: 'ok', data: creator({ fullHistory: true, signatureCount: 2, walletAgeDays: 1.9 / 24, solBalance: 0.01 }) },
+    }),
+  );
+  const messages = alerts(risk);
+  const short = `${top.owner.slice(0, 4)}…${top.owner.slice(-4)}`;
+  assert.equal(messages.filter((m) => m.includes(short)).length, 1, messages.join('\n'));
+  assert.ok(messages.some((m) => /^3 autres wallets hors créateur au-dessus de 3,5 %.*4 wallets cumulent 73,16 %/.test(m)), messages.join('\n'));
+  // Wallet jetable, récent et vidé : un seul constat.
+  const wallet = messages.filter((m) => m.startsWith('Wallet du créateur'));
+  assert.deepEqual(wallet, ['Wallet du créateur jetable : seulement 2 transactions au total, créé il y a 1,9 h, quasiment vidé (0,0100 SOL)']);
+  assert.equal(risk.level, 'ROUGE');
+});
+
+test('pas de répétition : créateur = plus gros wallet, sa part n’est annoncée qu’une fois', () => {
+  const owner = Keypair.generate().publicKey.toBase58();
+  const wallets = [holder(40, 'creator', owner), ...zipfHolders(10, 2)];
+  const withCreator = alerts(computeRiskScore(input(wallets, { creator: { status: 'ok', data: creator({ address: owner, holdingPct: 40 }) } })));
+  assert.equal(withCreator.filter((m) => m.includes('40,00 %')).length, 1, withCreator.join('\n'));
+  assert.ok(withCreator.includes('Le créateur détient encore 40,00 % de la supply'));
+  // Module créateur indisponible : l'information reste donnée par le module holders.
+  const withoutCreator = alerts(computeRiskScore(input(wallets, { creator: { status: 'unavailable', reason: 'RPC saturé (429)' } })));
+  assert.ok(withoutCreator.some((m) => m.includes('(créateur) détient à lui seul 40,00 %')), withoutCreator.join('\n'));
+});
+
+test('pas de répétition : des wallets clonés ne déclenchent pas en plus l’alerte « distribution uniforme »', () => {
+  const messages = alerts(computeRiskScore(input(Array.from({ length: 10 }, () => holder(3)))));
+  assert.ok(messages.some((m) => m.startsWith('Wallets clonés')), messages.join('\n'));
+  assert.ok(!messages.some((m) => m.startsWith('Distribution anormalement uniforme')), messages.join('\n'));
+});

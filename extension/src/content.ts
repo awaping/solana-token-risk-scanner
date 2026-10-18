@@ -214,9 +214,13 @@ function showResult(mint: string, result: ScanLike): void {
     body.append(el('div', 'warn', `Note incomplète (${coverage} % de couverture). Non analysé : ${details}.`));
   }
 
+  // Critiques d'abord, puis alertes ; un même constat n'apparaît qu'une fois.
+  const seen = new Set<string>();
   const findings = result.risk.modules
     .flatMap((m) => m.findings)
     .filter((f) => f.severity === 'critical' || f.severity === 'warning')
+    .sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'critical' ? -1 : 1))
+    .filter((f) => !seen.has(f.message) && Boolean(seen.add(f.message)))
     .slice(0, 7);
 
   if (findings.length === 0) {

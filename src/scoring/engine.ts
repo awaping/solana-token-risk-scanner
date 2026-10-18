@@ -115,7 +115,11 @@ export function scoreAuthorities(token: TokenInfo): SubScore {
 // Distribution des holders
 // ---------------------------------------------------------------------------
 
-export function scoreHolders(h: HoldersAnalysis): SubScore {
+/**
+ * @param creatorReported le module créateur est disponible et annonce déjà la part
+ *   du créateur : si le plus gros wallet est le sien, on ne la répète pas ici.
+ */
+export function scoreHolders(h: HoldersAnalysis, creatorReported = false): SubScore {
   const findings: Finding[] = [];
   const floors: ScoreFloor[] = [];
 
@@ -129,8 +133,11 @@ export function scoreHolders(h: HoldersAnalysis): SubScore {
   }
 
   const biggest = h.wallets[0];
-  if (biggest) {
+  // Plus gros wallet annoncé en tête (≥ 10 %) : la liste des baleines ne le répète pas.
+  let biggestAnnounced = false;
+  if (biggest && !(biggest.kind === 'creator' && creatorReported)) {
     const who = `${shortAddr(biggest.owner)}${biggest.kind === 'creator' ? ' (créateur)' : ''}`;
+    biggestAnnounced = h.maxWalletPct >= 10;
     if (h.maxWalletPct >= 20) {
       findings.push({ severity: 'critical', message: `Le wallet ${who} détient à lui seul ${fmtPct(h.maxWalletPct)} de la supply` });
     } else if (h.maxWalletPct >= 10) {
@@ -169,11 +176,22 @@ export function scoreHolders(h: HoldersAnalysis): SubScore {
   );
   if (whales.length > 0) {
     const whaleSum = whales.reduce((acc, w) => acc + w.pct, 0);
-    const detail = whales.map((w) => `${shortAddr(w.owner)} ${fmtPct(w.pct)}`).join(' · ');
-    findings.push({
-      severity: whales.length >= 2 ? 'critical' : 'warning',
-      message: `${whales.length} wallet${whales.length > 1 ? 's' : ''} hors créateur au-dessus de ${fmtPct(CONCENTRATION.WHALE_SUPPLY_PCT, 1)} — ${detail} (${fmtPct(whaleSum)} cumulés)`,
-    });
+    const threshold = fmtPct(CONCENTRATION.WHALE_SUPPLY_PCT, 1);
+    const listed = biggestAnnounced ? whales.filter((w) => w !== biggest) : whales;
+    const detail = listed.map((w) => `${shortAddr(w.owner)} ${fmtPct(w.pct)}`).join(' · ');
+    const severity = whales.length >= 2 ? 'critical' : 'warning';
+    if (listed.length === whales.length) {
+      findings.push({
+        severity,
+        message: `${whales.length} wallet${whales.length > 1 ? 's' : ''} hors créateur au-dessus de ${threshold} — ${detail} (${fmtPct(whaleSum)} cumulés)`,
+      });
+    } else if (listed.length > 0) {
+      // Le plus gros est déjà annoncé plus haut : seuls les AUTRES sont listés.
+      findings.push({
+        severity,
+        message: `${listed.length} autre${listed.length > 1 ? 's' : ''} wallet${listed.length > 1 ? 's' : ''} hors créateur au-dessus de ${threshold} — ${detail} (${whales.length} wallets cumulent ${fmtPct(whaleSum)} de la supply)`,
+      });
+    }
     // Montée du sous-score, mais volontairement AUCUN plancher ici : ce module
     // ne voit pas la liquidité. Deux wallets à 4 % sont anodins sur un AMM
     // profond et mortels sur une curve à 14 %. C'est le mode live (fast-score),
@@ -213,10 +231,16 @@ export function scoreClustering(cl: ClusteringAnalysis, top20Pct: number): SubSc
     const significance = piecewise(top20Pct, [[3, 0.3], [10, 1]]);
     cvScore = piecewise(cl.coefficientOfVariation, [[0.1, 100], [0.2, 85], [0.35, 55], [0.5, 25], [0.7, 0]]) * significance;
     const cv = fmtNum(cl.coefficientOfVariation, 3);
+    // Des wallets clonés expliquent déjà l'uniformité : l'alerte est alors rétrogradée
+    // en information pour ne pas dire deux fois « soldes identiques ».
+    const explainedByClones = cl.clusters.some((k) => k.strictClone);
     if (cl.coefficientOfVariation < 0.2) {
-      findings.push({ severity: 'critical', message: `Distribution anormalement uniforme (CV = ${cv}) : soldes quasi identiques` });
+      findings.push({
+        severity: explainedByClones ? 'info' : 'critical',
+        message: `Distribution anormalement uniforme (CV = ${cv}) : soldes quasi identiques`,
+      });
     } else if (cl.coefficientOfVariation < 0.35) {
-      findings.push({ severity: 'warning', message: `Distribution suspecte, peu dispersée (CV = ${cv})` });
+      findings.push({ severity: explainedByClones ? 'info' : 'warning', message: `Distribution suspecte, peu dispersée (CV = ${cv})` });
     } else if (cl.clusters.length > 0) {
       findings.push({ severity: 'info', message: `Dispersion globale normale (CV = ${cv}), mais groupe(s) de parts identiques détecté(s)` });
     } else {
@@ -398,13 +422,19 @@ export function scoreCreator(cr: CreatorAnalysis): SubScore {
   }
   if (n >= 10) floors.push({ floor: 60, reason: `Déployeur en série (${n} tokens)` });
 
+  // Hygiène du wallet (jetable, récent, vidé) : un seul constat au lieu de trois lignes.
+  const walletFacts: string[] = [];
   if (cr.fullHistory && cr.signatureCount < 15) {
     score += 15;
-    findings.push({ severity: 'warning', message: `Wallet jetable : seulement ${plural(cr.signatureCount, 'transaction')} au total` });
+    walletFacts.push(`seulement ${plural(cr.signatureCount, 'transaction')} au total`);
   }
   if (cr.walletAgeDays !== undefined && cr.walletAgeDays < 2) {
     score += 10;
-    findings.push({ severity: 'warning', message: `Wallet créé il y a ${fmtNum(cr.walletAgeDays * 24, 1)} h` });
+    walletFacts.push(`créé il y a ${fmtNum(cr.walletAgeDays * 24, 1)} h`);
+  }
+  if (cr.solBalance < 0.05) {
+    score += 10;
+    walletFacts.push(`quasiment vidé (${fmtSol(cr.solBalance)})`);
   }
 
   if (cr.holdingPct === 0) {
@@ -420,9 +450,12 @@ export function scoreCreator(cr: CreatorAnalysis): SubScore {
     findings.push({ severity: 'ok', message: `Le créateur détient ${fmtPct(cr.holdingPct)} de la supply` });
   }
 
-  if (cr.solBalance < 0.05) {
-    score += 10;
-    findings.push({ severity: 'warning', message: `Wallet du créateur quasiment vidé (${fmtSol(cr.solBalance)})` });
+  if (walletFacts.length > 0) {
+    const disposable = cr.fullHistory && cr.signatureCount < 15;
+    findings.push({
+      severity: 'warning',
+      message: disposable ? `Wallet du créateur jetable : ${walletFacts.join(', ')}` : `Wallet du créateur ${walletFacts.join(', ')}`,
+    });
   }
 
   return { score: clamp(score), findings, floors };
@@ -457,7 +490,7 @@ export function computeRiskScore(input: ScoringInput): RiskScore {
 
   const modules: ModuleScore[] = [
     toModuleScore('authorities', { status: 'ok', data: input.token }, scoreAuthorities, floors),
-    toModuleScore('holders', input.holders, scoreHolders, floors),
+    toModuleScore('holders', input.holders, (d) => scoreHolders(d, input.creator.status === 'ok'), floors),
     toModuleScore('clustering', input.clustering, (d) => scoreClustering(d, top20Pct), floors),
     toModuleScore('dusting', input.dusting, scoreDusting, floors),
     toModuleScore('reserve', input.reserve, scoreReserve, floors),

@@ -172,9 +172,9 @@ Extrait de `npm run demo` (scénario simulé) :
 
 ```text
 ── SCORE DE RISQUE GLOBAL ────────────────────────────────────────────────────
-  80 / 100  [ROUGE]  ████████████████████████████████░░░░░░░░
+  risque 80 / 100  [ROUGE]  ████████████████████████████████░░░░░░░░
   Pattern de manipulation avéré (wallets clonés, supply monopolisée, autorités dangereuses).
-  Confiance 100 % (6/6 modules) · score pondéré 61,5 relevé au plancher 80
+  couverture 6/6 modules · score pondéré 61,5 relevé au plancher 80 : 10 wallets clonés (30,00 % de la supply)
 
 ── Distribution des holders (Top 20) ────────────────────── ████░░░░░░  42/100
     #  Propriétaire      Part         Solde                Type
@@ -200,17 +200,16 @@ Extrait de `npm run demo` (scénario simulé) :
 
 ── Traçabilité du créateur ──────────────────────────────── ████████░░  75/100
    ▲ 3 autres tokens créés sur tout son historique
-   ▲ Wallet jetable : seulement 4 transactions au total
-   ▲ Wallet du créateur quasiment vidé (0,0100 SOL)
+   ▲ Wallet du créateur jetable : seulement 4 transactions au total, quasiment vidé (0,0100 SOL)
 
 ── INDICATEURS CRITIQUES ─────────────────────────────────────────────────────
    ✖ Wallets clonés : 10 wallets à ~3,00 % chacun … [Clustering de wallets]
    ✖ 98,2 % des holders (800) ont un solde < 0,001 % … [Dusting (faux holders)]
    ✖ Liquidité quasi inexistante : 3,00 SOL dans la pool principale [Réserve réelle & liquidité]
-   ▲ …
-   Planchers de score déclenchés :
-     ≥ 80 : 10 wallets clonés (30,00 % de la supply)
+   ▲ 3 alertes de moindre gravité, détaillées dans les modules ci-dessus
 ```
+
+Chaque constat n'apparaît qu'une fois. Le récapitulatif final ne reprend que les constats critiques, et le plancher qui fixe la note est nommé sur la ligne du score.
 
 ---
 

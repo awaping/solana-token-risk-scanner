@@ -171,9 +171,10 @@ export function renderReport(result: ScanResult): string {
   // Surtout pas « Confiance 100 % » juste sous le score : deux pourcentages
   // voisins dont l'un est bon à 100 et l'autre catastrophique à 100.
   const confidence = `couverture ${available}/${risk.modules.length} modules`;
+  // Le plancher qui fixe la note est nommé ici, plutôt que répété dans une liste à part.
   const floorInfo =
     risk.floors.length > 0 && risk.floors[0]!.floor > risk.weightedScore
-      ? ` · score pondéré ${fmtNum(risk.weightedScore, 1)} relevé au plancher ${risk.floors[0]!.floor}`
+      ? ` · score pondéré ${fmtNum(risk.weightedScore, 1)} relevé au plancher ${risk.floors[0]!.floor} : ${risk.floors[0]!.reason}`
       : ` · score pondéré ${fmtNum(risk.weightedScore, 1)}`;
   lines.push(c.gray(`  ${confidence}${floorInfo}`));
   lines.push('');
@@ -197,22 +198,21 @@ export function renderReport(result: ScanResult): string {
 
   // Résumé des indicateurs critiques
   lines.push(rule('INDICATEURS CRITIQUES'));
-  const alerts = risk.modules
-    .flatMap((m) => m.findings.map((f) => ({ ...f, module: m.label })))
-    .filter((f) => f.severity === 'critical' || f.severity === 'warning')
-    .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+  // Récapitulatif : seuls les constats critiques. Les alertes de moindre gravité
+  // restent dans leur module ci-dessus, sans être répétées une seconde fois.
+  const all = risk.modules.flatMap((m) => m.findings.map((f) => ({ ...f, module: m.label })));
+  const critical = all.filter((f) => f.severity === 'critical');
+  const warnings = all.filter((f) => f.severity === 'warning').length;
 
-  if (alerts.length === 0) {
-    lines.push(`   ${ICONS.ok} Aucun indicateur critique ou d'alerte`);
+  if (critical.length === 0) {
+    lines.push(`   ${ICONS.ok} Aucun indicateur critique`);
   } else {
-    for (const alert of alerts) {
-      lines.push(`   ${ICONS[alert.severity]} ${alert.message} ${c.gray(`[${alert.module}]`)}`);
+    for (const alert of critical) {
+      lines.push(`   ${ICONS.critical} ${alert.message} ${c.gray(`[${alert.module}]`)}`);
     }
   }
-  if (risk.floors.length > 0) {
-    lines.push('');
-    lines.push(c.gray('   Planchers de score déclenchés :'));
-    for (const floor of risk.floors) lines.push(c.gray(`     ≥ ${floor.floor} : ${floor.reason}`));
+  if (warnings > 0) {
+    lines.push(c.gray(`   ${ICONS.warning} ${warnings} alerte${warnings > 1 ? 's' : ''} de moindre gravité, détaillée${warnings > 1 ? 's' : ''} dans les modules ci-dessus`));
   }
 
   lines.push('');

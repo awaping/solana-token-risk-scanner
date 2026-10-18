@@ -25,7 +25,7 @@ function fakeChrome(calls) {
       onStartup: listener(),
       onInstalled: listener(),
       id: 'smoke-test',
-      getManifest: () => ({ version: '1.2.3' }),
+      getManifest: () => ({ version: '1.2.4' }),
       sendMessage: async () => ({ ok: true }),
     },
     storage: { sync: { get: async (d) => d, set: async () => {} } },
