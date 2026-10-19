@@ -18,7 +18,7 @@ import { detectToken, type Detection } from './detect.js';
 import { describeMissingModule } from './panel-result.js';
 import { diagnose, DryFlipReader } from './paper-dom.js';
 import { PaperTracker, type PaperView } from './paper-tracker.js';
-import { formatAmount, formatPct, type PaperAmount } from './paper.js';
+import { formatAmount, formatPct, isClosed, type PaperAmount } from './paper.js';
 import { safeUrl, twitterLabel, type DevInfo, type Socials } from './socials.js';
 
 interface Finding {
@@ -513,7 +513,8 @@ function renderPaper(): void {
     if (p.bought) add(`IN ${formatAmount(p.bought)}`);
     if (p.pnl) add('PnL ', signedAmount(p.pnl), p.pnlPct !== undefined ? ` (${formatPct(p.pnlPct)})` : '');
     else if (p.pnlPct !== undefined) add('PnL ', el('span', p.pnlPct > 0 ? 'gain' : p.pnlPct < 0 ? 'loss' : '', formatPct(p.pnlPct)));
-    if (p.remaining) add(`reste ${formatAmount(p.remaining)}`);
+    if (isClosed(p)) add('position soldée');
+    else if (p.remaining) add(`reste ${formatAmount(p.remaining)}`);
     else if (p.remainingPct !== undefined) add(`reste ${formatPct(p.remainingPct).replace('+', '')}`);
     if (p.sold && p.sold.value) add(`vendu ${formatAmount(p.sold)}`);
   } else {

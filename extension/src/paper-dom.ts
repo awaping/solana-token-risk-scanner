@@ -70,6 +70,8 @@ export function toTree(root: Node, ownId: string, budget = { left: 1_500 }): Tex
     if (el.tagName === 'IMG') {
       // Logo d'unité (SOL, BNB) affiché en image à côté du nombre.
       const alt = (el.getAttribute('alt') ?? '').trim();
+      // Logo « DryFlip » en image : repère de l'en-tête (le solde le suit).
+      if (/^dry\s?flip$/i.test(alt)) return { text: alt };
       const src = el.getAttribute('src') ?? '';
       const unit = /^(sol|bnb|eth|usd)$/i.test(alt) ? alt : /solana|\bsol\b|sol[-_.]/i.test(src) ? 'SOL' : /bnb|binance/i.test(src) ? 'BNB' : '';
       return unit ? { text: unit } : null;

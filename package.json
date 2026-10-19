@@ -1,6 +1,6 @@
 {
   "name": "solana-token-risk-scanner",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Scanner open-source de risques et de liquidité pour tokens Solana (bonding curves Pump.fun, PumpSwap, Raydium) : distribution des holders, clustering de wallets, dusting, réserve réelle, traçabilité du créateur et score de risque 0-100.",
   "type": "module",
   "bin": {

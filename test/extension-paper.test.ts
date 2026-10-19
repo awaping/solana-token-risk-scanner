@@ -115,10 +115,12 @@ test('achats, ventes, fermeture', () => {
 });
 
 test('affichage français', () => {
-  assert.equal(formatAmount(sol(1.25)), '1,25 SOL');
-  assert.equal(formatAmount(sol(-0.3), true), '−0,3 SOL');
-  assert.equal(formatAmount(sol(0.32), true), '+0,32 SOL');
-  assert.equal(formatAmount({ value: 45.2, unit: 'USD' }), '45,2 $');
+  // Toujours 4 décimales, comme DryFlip.
+  assert.equal(formatAmount(sol(1.25)), '1,2500 SOL');
+  assert.equal(formatAmount(sol(0.1)), '0,1000 SOL');
+  assert.equal(formatAmount(sol(-0.3), true), '−0,3000 SOL');
+  assert.equal(formatAmount(sol(0.0128), true), '+0,0128 SOL');
+  assert.equal(formatAmount({ value: 45.2, unit: 'USD' }), '45,2000 $');
   assert.equal(formatPct(21.04), '+21 %');
   assert.equal(formatPct(-7.25), '−7,3 %');
 });
@@ -142,4 +144,62 @@ test('position soldée : reste à zéro, en pourcentage, ou poussière d’arron
   const position = readPaper(widget).position!;
   assert.equal(position.remainingPct, 0);
   assert.equal(isClosed(position), true);
+});
+
+/**
+ * Le widget DryFlip tel qu'il s'affiche réellement (capture du 19/10) : solde dans
+ * l'en-tête à côté du nom, BOUGHT / SOLD / REMAINING en cartes, « - » une fois tout
+ * revendu, « PNL CHANGE » sans signe (vert), boutons d'achat et de vente rapides.
+ */
+function realWidget(remaining: string, pnl: TextTree[], header = '5.42'): TextTree {
+  return e(
+    e(e(t('DryFlip')), e(t(header), t('≡')), e()),
+    e(t('BUY')),
+    e(t('Amount'), t('SOL')),
+    e(t('0.05'), t('0.1'), t('0.15'), t('0.25')),
+    e(t('30%'), t('0.001'), t('0.001')),
+    e(t('ORDER'), e(t('USD'), t('SOL'))),
+    e(e(t('BOUGHT'), t('0.1000 SOL')), e(t('SOLD'), t('0.1168 SOL')), e(t('REMAINING'), t(remaining))),
+    e(t('PNL CHANGE'), e(...pnl)),
+    e(t('SELL')),
+    e(t('Amount (%)')),
+    e(t('10%'), t('25%'), t('50%'), t('100%')),
+    e(t('30%'), t('0.001'), t('0.001'), t('SELL INIT')),
+    e(t('TAKE PROFIT / STOP LOSS')),
+    e(t('LIMIT BUY')),
+  );
+}
+
+test('widget DryFlip réel : position soldée (« - »), PnL change, solde de l’en-tête', () => {
+  const reading = readPaper(realWidget('-', [t('0.0128 SOL', 'up'), t('(+13%)', 'up')]));
+  assert.deepEqual(reading.position, {
+    bought: sol(0.1),
+    sold: sol(0.1168),
+    remaining: { value: 0, unit: '' },
+    pnl: sol(0.0128),
+    pnlPct: 13,
+  });
+  assert.equal(isClosed(reading.position), true, 'Remaining « - » après une vente totale = OUT');
+  assert.deepEqual(reading.wallet, { balance: sol(5.42) });
+});
+
+test('widget DryFlip réel : position ouverte en perte', () => {
+  const widget = e(
+    e(e(t('DryFlip')), e(t('9.87'))),
+    e(e(t('BOUGHT'), t('0.2500 SOL')), e(t('SOLD'), t('0 SOL')), e(t('REMAINING'), t('0.2010 SOL'))),
+    e(t('PNL CHANGE'), e(t('-0.0490 SOL', 'down'), t('(-19.6%)', 'down'))),
+  );
+  const reading = readPaper(widget);
+  assert.deepEqual(reading.position, { bought: sol(0.25), sold: sol(0), remaining: sol(0.201), pnl: sol(-0.049), pnlPct: -19.6 });
+  assert.equal(isClosed(reading.position), false);
+  assert.deepEqual(reading.wallet, { balance: sol(9.87) });
+});
+
+test('widget DryFlip réel sans position : solde seul, aucune position', () => {
+  const widget = e(
+    e(e(t('DryFlip')), e(t('5.42'))),
+    e(e(t('BOUGHT'), t('-')), e(t('SOLD'), t('-')), e(t('REMAINING'), t('-'))),
+    e(t('PNL CHANGE'), e(t('-'))),
+  );
+  assert.deepEqual(readPaper(widget), { wallet: { balance: { value: 5.42, unit: '' } } });
 });

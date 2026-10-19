@@ -71,7 +71,8 @@ const LABELS: Array<[Field, RegExp]> = [
   ['bought', /^(total )?(bought|invested|spent|achet[ée]|investi)$/],
   ['sold', /^(total )?(sold|vendu)$/],
   ['remaining', /^(remaining|holding|holdings|current value|value|restant|reste)$/],
-  ['pnl', /^((total|unrealized|unrealised|realized|realised|live) )?(pnl|p&l|p\/l|profit|profit\/loss)$/],
+  // DryFlip : « PNL CHANGE ».
+  ['pnl', /^((total|unrealized|unrealised|realized|realised|live) )?(pnl|p&l|p\/l|profit|profit\/loss)( change)?$/],
   ['balance', /^((wallet|paper|virtual|sol|bnb) )?(balance|solde)$/],
 ];
 
@@ -202,6 +203,10 @@ export function readFields(root: TextTree): Partial<Record<Field, Found>> {
     fields[field] = found;
   };
 
+  // « - » à la place d'une valeur (Remaining une fois tout revendu, chez DryFlip) : zéro.
+  const dash = (parts: Leaf[]) => parts.length > 0 && parts.every((p) => DASH.test(p.text));
+  const zero = (label: Label): Found => ({ amount: { value: 0, unit: label.unit } });
+
   leaves.forEach((leaf, i) => {
     const inline = labels[i] ? null : inlineLabel(leaf.text);
     if (inline) return set(inline.label.field, parseValue(inline.rest, leaf.tone, inline.label.unit));
@@ -219,6 +224,7 @@ export function readFields(root: TextTree): Partial<Record<Field, Found>> {
         else parts.push(leaves[j]!);
       }
       if (otherLabel) break;
+      if (dash(parts)) return set(label.field, zero(label));
       if (parts.some((p) => /\d/.test(p.text))) {
         const tone = parts.find((p) => /\d/.test(p.text))?.tone;
         return set(label.field, parseValue(parts.map((p) => p.text).join(' '), tone, label.unit));
@@ -228,6 +234,7 @@ export function readFields(root: TextTree): Partial<Record<Field, Found>> {
     // Repli : textes qui suivent le libellé, jusqu'au libellé suivant.
     const parts: Leaf[] = [];
     for (let j = i + 1; j < leaves.length && j <= i + 4 && !labels[j]; j++) parts.push(leaves[j]!);
+    if (parts[0] && DASH.test(parts[0].text)) return set(label.field, zero(label));
     if (parts.some((p) => /\d/.test(p.text))) {
       const tone = parts.find((p) => /\d/.test(p.text))?.tone;
       set(label.field, parseValue(parts.map((p) => p.text).join(' '), tone, label.unit));
@@ -237,6 +244,23 @@ export function readFields(root: TextTree): Partial<Record<Field, Found>> {
 }
 
 const nonZero = (amount?: PaperAmount) => amount !== undefined && Math.abs(amount.value) > 1e-12;
+const DASH = /^[-–—]+$/;
+
+/**
+ * Solde affiché dans l'en-tête du widget, juste après le nom « DryFlip » (sans
+ * libellé « Balance ») : premier nombre seul qui suit, icônes ignorées.
+ */
+export function headerBalance(root: TextTree): PaperAmount | undefined {
+  const { leaves } = flatten(root);
+  const at = leaves.findIndex((leaf) => /^dry\s?flip$/i.test(leaf.text));
+  if (at < 0) return undefined;
+  for (const leaf of leaves.slice(at + 1, at + 4)) {
+    if (!/[\p{L}\d]/u.test(leaf.text)) continue; // icône ou symbole (logo SOL)
+    if (!/^[\d\s.,]+$/.test(leaf.text)) return undefined; // du texte : ce n'est pas un solde
+    return parseValue(leaf.text).amount;
+  }
+  return undefined;
+}
 
 /**
  * Position et solde lus dans un widget DryFlip. Le widget du token porte les
@@ -259,9 +283,13 @@ export function readPaper(root: TextTree): PaperReading {
     // « Bought 0 » : DryFlip affiche son widget, mais aucune position n'est ouverte.
     if (nonZero(position.bought) || nonZero(position.sold)) reading.position = position;
   }
-  if (f.balance?.amount || (!hasTrade && f.pnl)) {
+  // Solde : libellé « Balance » (carte flottante), sinon le nombre de l'en-tête du widget,
+  // dans l'unité des montants de la position.
+  const header = f.balance?.amount ? undefined : headerBalance(root);
+  const balance = f.balance?.amount ?? (header ? { value: header.value, unit: header.unit || reading.position?.bought?.unit || '' } : undefined);
+  if (balance || (!hasTrade && f.pnl)) {
     reading.wallet = {
-      ...(f.balance?.amount ? { balance: f.balance.amount } : {}),
+      ...(balance ? { balance } : {}),
       ...(!hasTrade && f.pnl?.amount ? { pnl: f.pnl.amount } : {}),
       ...(!hasTrade && f.pnl?.pct !== undefined ? { pnlPct: f.pnl.pct } : {}),
     };
@@ -318,11 +346,11 @@ export function isNewBuy(before: PaperPosition | undefined, after: PaperPosition
   return after.bought!.value > before.bought.value * (1 + 1e-6) + 1e-9;
 }
 
-/** « 1,25 SOL », « 45,2 $ », « +0,32 SOL » (signé). */
+/** « 1,2500 SOL », « 45,2000 $ », « +0,0128 SOL » (signé). */
 export function formatAmount(amount: PaperAmount, signed = false): string {
   const abs = Math.abs(amount.value);
-  const digits = abs >= 1000 ? 0 : abs >= 100 ? 1 : abs >= 1 ? 2 : abs >= 0.01 ? 3 : 5;
-  const text = abs.toLocaleString('fr-FR', { maximumFractionDigits: digits });
+  // Toujours 4 décimales, comme DryFlip (0,1000 SOL · 0,0128 SOL).
+  const text = abs.toLocaleString('fr-FR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
   const sign = amount.value < 0 ? '−' : signed && amount.value > 0 ? '+' : '';
   const unit = amount.unit === 'USD' ? ' $' : amount.unit ? ` ${amount.unit}` : '';
   return `${sign}${text}${unit}`;

@@ -193,9 +193,11 @@ Padre…), le panneau affiche ta position sur le token ouvert :
 puis « IN à 39 s de vie · OUT à 58 s · détenu 19 s ».
 
 **Comment c'est lu.** Une extension ne peut pas lire le stockage d'une autre :
-le panneau lit ce que DryFlip **affiche** sur la page (Bought / Sold /
-Remaining / PnL du widget, Balance de la carte flottante), chaque seconde, y
-compris dans un shadow DOM fermé. Seuls les éléments identifiables comme DryFlip
+le panneau lit ce que DryFlip **affiche** sur la page (BOUGHT / SOLD /
+REMAINING / PNL CHANGE du widget, solde de l'en-tête à côté du nom DryFlip ou
+de la carte flottante), chaque seconde, y compris dans un shadow DOM fermé.
+« - » en REMAINING (tout revendu) vaut zéro : c'est le OUT. Les montants sont
+affichés avec 4 décimales, comme dans DryFlip. Seuls les éléments identifiables comme DryFlip
 sont lus, jamais le reste de la page (où le terminal affiche ton vrai wallet).
 La mise en page de DryFlip n'étant pas documentée, la lecture se fonde sur les
 libellés. Si la position n'apparaît pas alors que tu es IN, le lien
