@@ -5,10 +5,16 @@
  */
 import { CONCENTRATION } from '../../src/constants.js';
 import type { ScanResult } from '../../src/types.js';
-import type { ScanSnapshot } from './history-store.js';
+import type { ScanSnapshot, ScanTrigger } from './history-store.js';
 
-export function toSnapshot(result: ScanResult, at = Date.now()): ScanSnapshot {
+/**
+ * `requestedAt` : moment où l'analyse a été demandée (ouverture de la page,
+ * achat) ; l'âge du token est mesuré à cet instant, pas à la fin du scan.
+ */
+export function toSnapshot(result: ScanResult, at = Date.now(), options: { trigger?: ScanTrigger; requestedAt?: number } = {}): ScanSnapshot {
   const { token, risk } = result;
+  const createdAt = result.tokenAge?.createdAt.getTime();
+  const tokenAgeSec = createdAt === undefined ? undefined : Math.max(0, ((options.requestedAt ?? at) - createdAt) / 1000);
   const holders = result.holders.status === 'ok' ? result.holders.data : undefined;
   const clustering = result.clustering.status === 'ok' ? result.clustering.data : undefined;
   const dusting = result.dusting.status === 'ok' ? result.dusting.data : undefined;
@@ -27,6 +33,7 @@ export function toSnapshot(result: ScanResult, at = Date.now()): ScanSnapshot {
     ...(reserve
       ? {
           venue: reserve.venue,
+          marketType: reserve.marketType,
           reserveSol: reserve.realReserveSol,
           marketCapSol: reserve.marketCapSol,
           priceSol: reserve.priceSol,
@@ -41,6 +48,7 @@ export function toSnapshot(result: ScanResult, at = Date.now()): ScanSnapshot {
         }
       : {}),
     ...(clustering?.largestCluster ? { largestClusterSize: clustering.largestCluster.owners.length } : {}),
+    ...(result.tokenAge ? { mintTxCount: result.tokenAge.transactions } : {}),
   };
 
   const alerts = risk.modules
@@ -54,6 +62,8 @@ export function toSnapshot(result: ScanResult, at = Date.now()): ScanSnapshot {
     ...(token.symbol ? { symbol: token.symbol } : {}),
     point: {
       at,
+      ...(options.trigger ? { trigger: options.trigger } : {}),
+      ...(tokenAgeSec !== undefined ? { tokenAgeSec } : {}),
       score: risk.score,
       level: risk.level,
       coverage: risk.confidence,
@@ -113,6 +123,7 @@ export function toSnapshot(result: ScanResult, at = Date.now()): ScanSnapshot {
           }
         : {}),
       ...(dusting ? { dusting: { totalHolders: dusting.totalHolders, dustHolders: dusting.dustHolders, dustRatio: dusting.dustRatio } } : {}),
+      ...(result.tokenAge && createdAt !== undefined ? { tokenAge: { createdAt, exact: result.tokenAge.exact } } : {}),
       ...(result.resolvedFrom ? { resolvedFrom: { address: result.resolvedFrom.address, kind: result.resolvedFrom.kind } } : {}),
       durationMs: result.durationMs,
       rpcRequests: result.rpcRequests,

@@ -13,8 +13,12 @@
  *     l'URL qu'au chargement afficherait éternellement le premier token.
  *     D'où la surveillance de l'historique.
  */
+import { formatAge } from '../../src/utils/age.js';
 import { detectToken, type Detection } from './detect.js';
 import { describeMissingModule } from './panel-result.js';
+import { diagnose, DryFlipReader } from './paper-dom.js';
+import { PaperTracker, type PaperView } from './paper-tracker.js';
+import { formatAmount, formatPct, type PaperAmount } from './paper.js';
 import { safeUrl, twitterLabel, type DevInfo, type Socials } from './socials.js';
 
 interface Finding {
@@ -36,7 +40,25 @@ interface ScanLike {
   /** Adresse de la page quand ce n'était pas le mint (bonding curve, pool) : le moteur a remonté jusqu'au token. */
   resolvedFrom?: { address: string; kind: string };
   /** Analyses précédentes du même token, pour afficher l'évolution de la note. */
-  history?: { count: number; first: { at: number; score: number }; previous?: { at: number; score: number } };
+  history?: { count: number; first: { at: number; score: number }; previous?: { at: number; score: number }; deadAtOpen?: string };
+  /** Création du token (ms). */
+  tokenAge?: { createdAt: number; exact: boolean };
+}
+
+interface TradeLite {
+  kind: 'achat' | 'vente';
+  at: number;
+  observed: boolean;
+  tokenAgeSec?: number;
+  closes?: boolean;
+}
+
+interface PaperReply {
+  ok: boolean;
+  result?: ScanLike;
+  trades?: TradeLite[];
+  deadAtOpen?: string;
+  error?: string;
 }
 
 type ScanResponse = { ok: true; result: ScanLike } | { ok: false; error: string; action?: 'options' | 'retry' };
@@ -107,6 +129,12 @@ const STYLE = `
 .socials { margin: 8px 0 4px; font-size: 12px; color: #c3c7ce; line-height: 1.5; }
 .lnk { color: #60a5fa; text-decoration: none; } .lnk:hover { text-decoration: underline; }
 .version { padding: 0 12px 8px; font-size: 10px; color: #6b7280; text-align: right; }
+.age { margin: 0 0 6px; font-size: 11px; color: #8b9199; font-variant-numeric: tabular-nums; }
+.dead { margin: 0 0 8px; padding: 7px 8px; border-radius: 6px; background: #3a0d0d; color: #fca5a5; font-size: 11px; line-height: 1.45; }
+.paper { margin: 8px 0 2px; padding: 7px 8px; border-radius: 6px; background: #101b2d; border: 1px solid #1e3a5f; font-size: 12px; line-height: 1.5; color: #c3c7ce; font-variant-numeric: tabular-nums; }
+.paper .t { color: #93c5fd; font-weight: 600; }
+.gain { color: #34d399; font-weight: 600; } .loss { color: #f87171; font-weight: 600; }
+.diag { width: 100%; box-sizing: border-box; height: 90px; margin-top: 6px; background: #0e1013; color: #c3c7ce; border: 1px solid #2a2e35; border-radius: 6px; font: 10px ui-monospace, Menlo, monospace; }
 `;
 
 function ensurePanel(): ShadowRoot {
@@ -305,8 +333,11 @@ function historyLine(result: ScanLike, mint: string): HTMLElement {
   return line;
 }
 
-function showResult(mint: string, result: ScanLike): void {
+function showResult(mint: string, result: ScanLike, entry = false): void {
   const { score, level } = result.risk;
+  tokenAge = result.tokenAge;
+  // Mint réellement analysé (la page peut afficher une pool) : c'est sous lui que la position est gardée.
+  if (tracker?.address === mint) tracker.mint = result.mint ?? mint;
   const cls = levelClass(level);
 
   const head = el('div', 'head');
@@ -337,6 +368,13 @@ function showResult(mint: string, result: ScanLike): void {
   head.append(close);
 
   const body = el('div', 'body');
+  ageLine = el('div', 'age');
+  body.append(ageLine);
+  renderAge();
+  if (entry) body.append(el('div', 'age', 'Analyse faite au moment de l’achat (IN) : gardée avec la position.'));
+  if (result.history?.deadAtOpen) {
+    body.append(el('div', 'dead', `Déjà rug à l'ouverture — ${result.history.deadAtOpen}. Ce token est ignoré dans les statistiques.`));
+  }
   // Un module absent, c'est un angle mort — pas une bonne nouvelle. Sans ce
   // bandeau, un token dont l'analyse des holders a échoué s'affiche VERT et
   // se lit comme « sain », alors que la mesure la plus importante manque.
@@ -377,8 +415,148 @@ function showResult(mint: string, result: ScanLike): void {
   }
   const socials = socialsLine(result, mint);
   if (socials) body.append(socials);
+  paperLine = el('div', 'paper');
+  body.append(paperLine);
+  renderPaper();
   body.append(historyLine(result, mint));
   render([head, body]);
+}
+
+// ---------------------------------------------------------------------------
+// Paper trading (DryFlip) et âge du token
+// ---------------------------------------------------------------------------
+
+let paperEnabled = false;
+const reader = new DryFlipReader(PANEL_ID);
+let tracker: PaperTracker | null = null;
+/** Dernière position lue sur le token précédent (widget pas encore rafraîchi après une navigation). */
+let previousKey: string | undefined;
+let paperView: PaperView = { status: 'recherche' };
+let trades: TradeLite[] = [];
+let paperLine: HTMLElement | null = null;
+let ageLine: HTMLElement | null = null;
+let tokenAge: ScanLike['tokenAge'];
+/** Moment où la page du token a été ouverte (pour l'âge du token à l'ouverture). */
+let openedAt = 0;
+
+function startTracking(address: string): void {
+  previousKey = tracker?.key ?? previousKey;
+  openedAt = Date.now();
+  tokenAge = undefined;
+  trades = [];
+  paperView = { status: 'recherche' };
+  tracker = paperEnabled ? new PaperTracker(address, openedAt, previousKey) : null;
+}
+
+function stopTracking(): void {
+  previousKey = tracker?.key ?? previousKey;
+  tracker = null;
+}
+
+/** Âge du token, mis à jour chaque seconde. */
+function renderAge(): void {
+  const line = ageLine;
+  if (!line?.isConnected) return;
+  if (!tokenAge) {
+    line.hidden = true;
+    return;
+  }
+  line.hidden = false;
+  const now = formatAge((Date.now() - tokenAge.createdAt) / 1000);
+  const atOpen = openedAt ? formatAge((openedAt - tokenAge.createdAt) / 1000) : undefined;
+  line.textContent = tokenAge.exact ? `Âge du token : ${now}${atOpen ? ` · ${atOpen} à l'ouverture de la page` : ''}` : `Âge du token : plus de ${now}`;
+}
+
+const signedAmount = (amount: PaperAmount) => el('span', amount.value > 0 ? 'gain' : amount.value < 0 ? 'loss' : '', formatAmount(amount, true));
+
+/** Position DryFlip : montant IN, PnL, reste, solde ; âges du token au IN et au OUT. */
+function renderPaper(): void {
+  const line = paperLine;
+  if (!line?.isConnected) return;
+  if (!paperEnabled) {
+    line.hidden = true;
+    return;
+  }
+  line.hidden = false;
+  const v = paperView;
+  const first = el('div', '');
+  first.append(el('span', 't', 'Paper DryFlip'));
+  const add = (...nodes: (Node | string)[]) => first.append(' · ', ...nodes);
+  const p = v.position;
+  if (v.status === 'position' && p) {
+    if (p.bought) add(`IN ${formatAmount(p.bought)}`);
+    if (p.pnl) add('PnL ', signedAmount(p.pnl), p.pnlPct !== undefined ? ` (${formatPct(p.pnlPct)})` : '');
+    else if (p.pnlPct !== undefined) add('PnL ', el('span', p.pnlPct > 0 ? 'gain' : p.pnlPct < 0 ? 'loss' : '', formatPct(p.pnlPct)));
+    if (p.remaining) add(`reste ${formatAmount(p.remaining)}`);
+    if (p.sold && p.sold.value) add(`vendu ${formatAmount(p.sold)}`);
+  } else {
+    const text = { recherche: 'lecture du widget…', vide: 'pas de position sur ce coin', iframe: 'widget isolé dans un cadre, illisible', absent: 'widget DryFlip non trouvé sur la page', position: '' }[v.status];
+    add(el('span', 'muted', text));
+  }
+  if (v.wallet?.balance) add(`solde ${formatAmount(v.wallet.balance)}`);
+
+  const nodes: Node[] = [first];
+  const buy = trades.find((t) => t.kind === 'achat');
+  const exit = [...trades].reverse().find((t) => t.closes);
+  const ages: string[] = [];
+  if (buy?.tokenAgeSec !== undefined) ages.push(`IN à ${formatAge(buy.tokenAgeSec)} de vie${buy.observed ? '' : ' (position déjà ouverte : heure de la 1re lecture)'}`);
+  if (exit?.tokenAgeSec !== undefined) ages.push(`OUT à ${formatAge(exit.tokenAgeSec)}`);
+  if (buy && exit && exit.at >= buy.at) ages.push(`détenu ${formatAge((exit.at - buy.at) / 1000)}`);
+  if (ages.length) nodes.push(el('div', 'muted', ages.join(' · ')));
+  if (v.status === 'absent' || v.status === 'iframe' || v.status === 'vide') {
+    const help = el('div', 'muted');
+    const button = el('button', 'link', 'diagnostic');
+    button.title = 'Copie ce que l’extension voit du widget DryFlip, pour corriger la lecture';
+    button.addEventListener('click', () => copyDiagnostic(line));
+    help.append(v.status === 'vide' ? 'Position non lue alors que tu es IN ? ' : 'DryFlip installé ? ', button);
+    nodes.push(help);
+  }
+  line.replaceChildren(...nodes);
+}
+
+/** Diagnostic du widget DryFlip (textes de DryFlip uniquement), copié pour être collé dans la conversation. */
+function copyDiagnostic(line: HTMLElement): void {
+  const text = JSON.stringify({ version: VERSION, status: paperView.status, ...diagnose(PANEL_ID) }, null, 1);
+  const box = el('textarea', 'diag') as HTMLTextAreaElement;
+  box.readOnly = true;
+  box.value = text;
+  line.parentElement?.querySelector('.diag')?.remove();
+  line.after(box);
+  box.select();
+  void navigator.clipboard
+    ?.writeText(text)
+    .then(() => box.before(el('div', 'muted', 'Diagnostic copié ✔ — colle-le dans la conversation.')))
+    .catch(() => undefined);
+}
+
+/** Lecture du widget, chaque seconde : affichage, et enregistrement des achats / ventes. */
+function paperTick(): void {
+  renderAge();
+  const current = tracker;
+  if (!paperEnabled || orphaned || !current) return;
+  let out;
+  try {
+    out = current.tick(reader.read(), Date.now());
+  } catch {
+    return;
+  }
+  paperView = out.view;
+  renderPaper();
+  if (out.send) void sendPaper(current, out.send);
+}
+
+async function sendPaper(current: PaperTracker, send: NonNullable<ReturnType<PaperTracker['tick']>['send']>): Promise<void> {
+  if (!extensionAlive()) return showOrphaned();
+  try {
+    const reply = (await chrome.runtime.sendMessage({ type: 'paper', ...(current.mint ? { mint: current.mint } : {}), ...send })) as PaperReply | undefined;
+    if (tracker !== current) return;
+    if (reply?.trades) trades = reply.trades;
+    // Achat détecté : le panneau affiche l'analyse faite à cet instant.
+    if (reply?.result && currentMint === current.address && !dismissed.has(current.address)) showResult(current.address, reply.result, true);
+    else renderPaper();
+  } catch (error) {
+    if (isInvalidated(error) || !extensionAlive()) showOrphaned();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -405,12 +583,14 @@ async function evaluate(): Promise<void> {
   if (!detection) {
     if (currentMint !== null) {
       currentMint = null;
+      stopTracking();
       removePanel();
     }
     return;
   }
   if (detection.address === currentMint) return;
   currentMint = detection.address;
+  startTracking(detection.address);
   if (dismissed.has(detection.address)) return;
 
   // Adresse de pool ou de bonding curve (DexScreener, Photon, Axiom) : le moteur
@@ -479,9 +659,11 @@ void (async () => {
   // une réponse partielle. Les deux doivent être sans conséquence — un réglage
   // illisible ne doit pas priver l'utilisateur du panneau.
   const settings = (await chrome.runtime.sendMessage({ type: 'settings' }).catch(() => null)) as
-    | { ok: true; settings?: { autoScan?: boolean } }
+    | { ok: true; settings?: { autoScan?: boolean; paperTracking?: boolean } }
     | null;
   if (settings?.ok && settings.settings?.autoScan === false) return;
+  paperEnabled = settings?.settings?.paperTracking !== false;
+  setInterval(paperTick, 1_000);
 
   watchNavigation(() => void evaluate());
   // Les terminaux peignent leur contenu après le premier rendu : on laisse

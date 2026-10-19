@@ -1,6 +1,7 @@
 /**
  * Rendu du diagnostic dans le terminal.
  */
+import { formatAge } from '../utils/age.js';
 import type { Finding, Holder, ModuleScore, RiskLevel, ScanResult, Severity } from '../types.js';
 import {
   bar,
@@ -156,6 +157,10 @@ export function renderReport(result: ScanResult): string {
     `  Programme   ${token.programLabel} · ${token.decimals} décimales · supply ${fmtTokenAmount(token.supply, token.decimals)}`,
   );
   if (result.reserve.status === 'ok') lines.push(`  Marché      ${result.reserve.data.venue}`);
+  if (result.tokenAge) {
+    const age = formatAge((result.generatedAt.getTime() - result.tokenAge.createdAt.getTime()) / 1000);
+    lines.push(`  Âge         ${result.tokenAge.exact ? age : `plus de ${age}`} ${c.gray(`(créé le ${result.tokenAge.createdAt.toLocaleString('fr-FR')})`)}`);
+  }
   lines.push('');
 
   // Score global

@@ -112,6 +112,65 @@ La page se met à jour en direct quand une analyse arrive. L'historique reste
 sur ta machine : rien n'est envoyé ailleurs. Plafonds : 1 000 tokens et
 200 analyses par token (l'analyse initiale est toujours gardée).
 
+Chaque analyse garde aussi l'**âge du token** au moment où elle a été demandée
+(date de la première transaction du mint, lue en une requête pour un token
+jeune) : le panneau affiche « Âge du token : 1 min 05 s · 17 s à l'ouverture de
+la page », et la fiche du token l'origine de chaque analyse (ouverture,
+actualisation, achat, suivi automatique).
+
+### Coins déjà rug à l'ouverture
+
+Un token déjà mort quand tu ouvres sa page (pool vidée sous 1 SOL, ou bonding
+curve revenue sous 0,5 SOL après au moins 40 transactions ou 15 min de vie) est
+marqué **déjà rug** : bandeau rouge dans le panneau, étiquette dans la liste.
+Ces tokens sont masqués de la liste et exclus des statistiques par défaut (case
+**Masquer les coins déjà rug à l'ouverture**, décochable). Un token vivant à
+l'ouverture qui meurt ensuite n'est pas concerné : c'est une issue, comptée
+comme un rug.
+
+## Paper trading DryFlip et analyse rug / run
+
+Avec l'extension [DryFlip](https://dryflip.com) (paper trading sur Axiom, GMGN,
+Padre…), le panneau affiche ta position sur le token ouvert :
+« Paper DryFlip · IN 1 SOL · PnL +0,4 SOL (+40 %) · reste 0 SOL · solde 9 SOL »,
+puis « IN à 39 s de vie · OUT à 58 s · détenu 19 s ».
+
+**Comment c'est lu.** Une extension ne peut pas lire le stockage d'une autre :
+le panneau lit ce que DryFlip **affiche** sur la page (Bought / Sold /
+Remaining / PnL du widget, Balance de la carte flottante), chaque seconde, y
+compris dans un shadow DOM fermé. Seuls les éléments identifiables comme DryFlip
+sont lus, jamais le reste de la page (où le terminal affiche ton vrai wallet).
+La mise en page de DryFlip n'étant pas documentée, la lecture se fonde sur les
+libellés. Si la position n'apparaît pas alors que tu es IN, le lien
+**diagnostic** du panneau copie ce que l'extension voit du widget (textes de
+DryFlip uniquement) : colle-le dans une issue pour ajuster la lecture.
+
+**À chaque achat (IN)** vu en direct, le token est analysé immédiatement : note,
+holders, dusting, réserve, créateur… tels qu'au moment de l'achat, avec l'âge du
+token à la seconde près (lecture chaque seconde). Une position déjà ouverte à
+l'ouverture de la page est marquée comme telle (heure = première lecture). Les
+ventes (OUT) sont datées de la même façon ; une position qui disparaît du widget
+plus de 5 s vaut vente totale, au dernier PnL affiché (si elle revient telle
+quelle dans la minute, c'était un simple re-rendu : la sortie est annulée).
+
+**Issue du token.** Après le premier achat, le token est ré-analysé
+automatiquement à 5 min, 15 min, 1 h, 4 h et 24 h, même si la page est fermée
+(reprise au redémarrage du navigateur). Sa capitalisation (en SOL) dit s'il a :
+
+- **run** : au moins ×2 après l'achat ;
+- **rug** : −70 % ou plus (ou réserve vidée à 90 %) sans avoir doublé avant ;
+- **neutre** : ni l'un ni l'autre à 4 h.
+
+**Page « Paper trading & analyse »** (bouton en haut de l'historique) : solde
+DryFlip dans le temps, PnL total, taux de réussite, résultats par note de risque
+au moment de l'achat, puis deux comparaisons : **run vs rug** et **trades
+gagnants vs perdants**. Pour chacune, la médiane de chaque donnée relevée à
+l'achat (note, âge du token, capitalisation, réserve, top 10, plus gros wallet,
+holders, poussière, part et passé du créateur, clusters…) et les alertes plus
+fréquentes d'un côté que de l'autre. Export CSV de tous les trades (séparateur
+« ; », pour Excel). La case **Suivre mes positions de paper trading DryFlip**
+des réglages désactive le tout.
+
 ## Mises à jour
 
 Chrome interdit à une extension chargée depuis un dossier de réécrire ses
@@ -160,6 +219,7 @@ background.ts     service worker : RPC (8 req/s partagées), scoring, cache 60 s
      │            historique, vérification et installation des mises à jour
      ├── src/scanner.ts        ← le MÊME moteur que le CLI, empaqueté par esbuild
      ├── history-store.ts      historique (chrome.storage.local) ← aussi lu par history-page.ts
+     ├── paper-*.ts            lecture du widget DryFlip, achats / ventes, issue run / rug
      └── updater/host.mjs      assistant local (native messaging) : git pull
 ```
 

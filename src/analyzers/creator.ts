@@ -45,27 +45,47 @@ async function fetchSignatures(rpc: RpcClient, address: PublicKey, limit: number
   return all;
 }
 
+/** Début de l'historique d'un mint : sa transaction de création, et donc sa date de naissance. */
+export interface MintOrigin {
+  /** Plus ancienne transaction réussie trouvée. */
+  oldest?: { signature: string; blockTime?: number };
+  /** true : le début de l'historique a été atteint (`oldest` est la création du mint). */
+  complete: boolean;
+  /** Transactions vues (borne basse si l'historique n'a pas été lu jusqu'au bout). */
+  count: number;
+}
+
+/**
+ * Remonte l'historique du mint jusqu'à sa plus ancienne signature (dans la
+ * limite de `maxPages` pages de 1000). Un token de quelques minutes tient en
+ * une seule requête ; au-delà de la limite, `oldest` n'est qu'une borne.
+ */
+export async function findMintOrigin(rpc: RpcClient, mint: PublicKey, maxPages: number): Promise<MintOrigin> {
+  let before: string | undefined;
+  let oldest: MintOrigin['oldest'];
+  let count = 0;
+  for (let page = 0; page < maxPages; page++) {
+    const signatures = await rpc.call((c) => c.getSignaturesForAddress(mint, { limit: PAGE_SIZE, before }));
+    count += signatures.length;
+    const ok = [...signatures].reverse().find((s) => s.err === null);
+    if (ok) oldest = { signature: ok.signature, ...(ok.blockTime ? { blockTime: ok.blockTime } : {}) };
+    if (signatures.length < PAGE_SIZE) return { ...(oldest ? { oldest } : {}), complete: true, count };
+    before = signatures[signatures.length - 1]!.signature;
+  }
+  return { ...(oldest ? { oldest } : {}), complete: false, count };
+}
+
 /**
  * Retrouve la transaction de création du mint en remontant l'historique
  * jusqu'à la plus ancienne signature (dans la limite de `maxPages` pages).
  */
-async function findMintCreator(rpc: RpcClient, mint: PublicKey, maxPages: number): Promise<string | null> {
-  let before: string | undefined;
-  for (let page = 0; page < maxPages; page++) {
-    const signatures = await rpc.call((c) => c.getSignaturesForAddress(mint, { limit: PAGE_SIZE, before }));
-    if (signatures.length === 0) return null;
-    if (signatures.length === PAGE_SIZE) {
-      before = signatures[signatures.length - 1]!.signature;
-      continue;
-    }
-    // Dernière page atteinte : la plus ancienne transaction réussie est la création.
-    const oldest = [...signatures].reverse().find((s) => s.err === null);
-    if (!oldest) return null;
-    const tx = await rpc.call((c) => c.getParsedTransaction(oldest.signature, { maxSupportedTransactionVersion: 0 }));
-    const feePayer = tx?.transaction.message.accountKeys.find((k) => k.signer);
-    return feePayer?.pubkey.toBase58() ?? null;
-  }
-  return null; // historique trop long pour être parcouru
+async function findMintCreator(rpc: RpcClient, origin: Promise<MintOrigin>): Promise<string | null> {
+  const { oldest, complete } = await origin;
+  // Historique trop long pour être parcouru : la plus ancienne transaction vue n'est pas la création.
+  if (!complete || !oldest) return null;
+  const tx = await rpc.call((c) => c.getParsedTransaction(oldest.signature, { maxSupportedTransactionVersion: 0 }));
+  const feePayer = tx?.transaction.message.accountKeys.find((k) => k.signer);
+  return feePayer?.pubkey.toBase58() ?? null;
 }
 
 /** Détermine l'adresse du créateur par ordre de fiabilité décroissante. */
@@ -74,12 +94,13 @@ export async function resolveCreator(
   config: ScannerConfig,
   token: TokenInfo,
   reserve: ReserveAnalysis | null,
+  origin?: () => Promise<MintOrigin>,
 ): Promise<CreatorIdentity | null> {
   if (config.creatorOverride) return { address: config.creatorOverride, source: 'override' };
   if (reserve?.bondingCurve?.creator) return { address: reserve.bondingCurve.creator, source: 'pump.fun bonding curve' };
 
   if (config.mintHistoryMaxPages > 0) {
-    const fromHistory = await findMintCreator(rpc, new PublicKey(token.mint), config.mintHistoryMaxPages);
+    const fromHistory = await findMintCreator(rpc, origin ? origin() : findMintOrigin(rpc, new PublicKey(token.mint), config.mintHistoryMaxPages));
     if (fromHistory) return { address: fromHistory, source: 'mint creation tx' };
   }
   if (token.mintAuthority) return { address: token.mintAuthority, source: 'mint authority' };

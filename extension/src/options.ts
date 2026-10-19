@@ -1,7 +1,7 @@
 /** Page d'options : réglages persistés et état de mise à jour. */
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const DEFAULTS = { rpcUrl: '', holderCensus: true, autoScan: true, autoUpdate: true };
+const DEFAULTS = { rpcUrl: '', holderCensus: true, autoScan: true, autoUpdate: true, paperTracking: true };
 
 /** Endpoints publics qui répondent 403 à toute requête d'origine navigateur. */
 const BROWSER_HOSTILE = /(^|.)api.(mainnet-beta|devnet|testnet).solana.com$/;
@@ -28,6 +28,7 @@ void (async () => {
   $<HTMLInputElement>('rpc').value = String(settings.rpcUrl ?? DEFAULTS.rpcUrl);
   $<HTMLInputElement>('census').checked = Boolean(settings.holderCensus);
   $<HTMLInputElement>('auto').checked = settings.autoScan !== false;
+  $<HTMLInputElement>('paper').checked = settings.paperTracking !== false;
 
   $('save').addEventListener('click', async () => {
     const rpcUrl = $<HTMLInputElement>('rpc').value.trim();
@@ -51,6 +52,7 @@ void (async () => {
       rpcUrl,
       holderCensus: $<HTMLInputElement>('census').checked,
       autoScan: $<HTMLInputElement>('auto').checked,
+      paperTracking: $<HTMLInputElement>('paper').checked,
     });
     const granted = await requestAccess(rpcUrl);
     status.textContent = granted ? 'enregistré' : "enregistré (accès à l'hôte refusé)";

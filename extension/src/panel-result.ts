@@ -24,6 +24,8 @@ export interface PanelResult {
   };
   /** Analyses précédentes du même token (évolution de la note). */
   history?: HistoryBrief;
+  /** Création du token (ms) ; exact = false : borne (le token est au moins aussi vieux). */
+  tokenAge?: { createdAt: number; exact: boolean };
 }
 
 export function toPanelResult(result: ScanResult, history?: HistoryBrief): PanelResult {
@@ -50,6 +52,7 @@ export function toPanelResult(result: ScanResult, history?: HistoryBrief): Panel
       })),
     },
     ...(history ? { history } : {}),
+    ...(result.tokenAge ? { tokenAge: { createdAt: result.tokenAge.createdAt.getTime(), exact: result.tokenAge.exact } } : {}),
   };
 }
 

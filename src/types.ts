@@ -254,6 +254,15 @@ export interface RiskScore {
   floors: ScoreFloor[];
 }
 
+/** Date de naissance du token (première transaction du mint). Informative : n'entre pas dans la note. */
+export interface TokenAge {
+  createdAt: Date;
+  /** false : historique trop long pour remonter jusqu'à la création ; le token est au moins aussi vieux. */
+  exact: boolean;
+  /** Transactions sur le mint depuis sa création (borne basse si `exact` = false). */
+  transactions: number;
+}
+
 export interface ScanResult {
   mint: string;
   /** Adresse fournie quand ce n'était pas le mint (bonding curve, pool, compte de token). */
@@ -264,6 +273,8 @@ export interface ScanResult {
   /** Requêtes RPC émises pendant l'analyse (retries inclus). */
   rpcRequests: number;
   token: TokenInfo;
+  /** Âge du token (absent si son historique n'a pas pu être lu). */
+  tokenAge?: TokenAge;
   holders: ModuleOutcome<HoldersAnalysis>;
   clustering: ModuleOutcome<ClusteringAnalysis>;
   dusting: ModuleOutcome<DustingAnalysis>;

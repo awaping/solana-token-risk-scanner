@@ -11,14 +11,14 @@ import type { ScannerConfig } from './config.js';
 import { maskRpcUrl } from './config.js';
 import { RpcClient } from './rpc/client.js';
 import { analyzeClustering } from './analyzers/clustering.js';
-import { analyzeCreator, resolveCreator } from './analyzers/creator.js';
+import { analyzeCreator, findMintOrigin, resolveCreator, type MintOrigin } from './analyzers/creator.js';
 import { analyzeDusting } from './analyzers/dusting.js';
 import { analyzeHolders } from './analyzers/holders.js';
 import { analyzeReserve } from './analyzers/reserve.js';
 import { resolveMintFromAccount } from './analyzers/resolve.js';
 import { analyzeToken, NotAMintError } from './analyzers/token.js';
 import { computeRiskScore } from './scoring/engine.js';
-import type { ModuleOutcome, ScanResult } from './types.js';
+import type { ModuleOutcome, ScanResult, TokenAge } from './types.js';
 
 export type ProgressCallback = (step: string, durationMs: number, ok: boolean) => void;
 
@@ -99,6 +99,14 @@ export async function scanToken(
   }
   onProgress?.('Mint & autorités', Date.now() - tokenStarted, true);
 
+  // Historique du mint, lu une seule fois : il date la création du token et, au
+  // besoin, désigne son créateur. Un token de quelques minutes tient en une requête.
+  let originP: Promise<MintOrigin> | undefined;
+  const origin = () => (originP ??= findMintOrigin(rpc, new PublicKey(token.mint), Math.max(1, config.mintHistoryMaxPages)));
+  const ageP: Promise<TokenAge | undefined> = origin()
+    .then(({ oldest, complete, count }) => (oldest?.blockTime ? { createdAt: new Date(oldest.blockTime * 1000), exact: complete, transactions: count } : undefined))
+    .catch(() => undefined);
+
   const holdersP = track('Top 20 holders', settle(analyzeHolders(rpc, token)), onProgress);
 
   const dustingP: Promise<ModuleOutcome<Awaited<ReturnType<typeof analyzeDusting>>>> = config.holderCensus
@@ -121,7 +129,7 @@ export async function scanToken(
     settle(
       (async () => {
         const reserve = await reserveP;
-        const identity = await resolveCreator(rpc, config, token, reserve.status === 'ok' ? reserve.data : null);
+        const identity = await resolveCreator(rpc, config, token, reserve.status === 'ok' ? reserve.data : null, origin);
         if (!identity) {
           throw new Error('créateur introuvable (historique du mint trop long) — précisez-le avec --creator <adresse>');
         }
@@ -131,7 +139,7 @@ export async function scanToken(
     onProgress,
   );
 
-  const [holders, dusting, reserve, creator] = await Promise.all([holdersP, dustingP, reserveP, creatorP]);
+  const [holders, dusting, reserve, creator, tokenAge] = await Promise.all([holdersP, dustingP, reserveP, creatorP, ageP]);
 
   // Signale le créateur dans le classement des holders.
   if (holders.status === 'ok' && creator.status === 'ok') {
@@ -158,6 +166,7 @@ export async function scanToken(
     rpcEndpoint: maskRpcUrl(rpc.url),
     rpcRequests: rpc.requestCount - requestsBefore,
     token,
+    ...(tokenAge ? { tokenAge } : {}),
     holders,
     clustering,
     dusting,

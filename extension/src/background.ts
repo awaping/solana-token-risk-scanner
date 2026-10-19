@@ -15,9 +15,10 @@ import { scanToken, parseMint } from '../../src/scanner.js';
 import type { ScanResult } from '../../src/types.js';
 import { compareVersions } from '../../src/update/version.js';
 import { chromeLocalStore } from './chrome-store.js';
-import { HistoryStore, type HistoryBrief } from './history-store.js';
+import { HistoryStore, type FollowUp, type HistoryBrief, type ScanTrigger } from './history-store.js';
 import { toSnapshot } from './history-snapshot.js';
 import { toPanelResult } from './panel-result.js';
+import type { PaperPosition, PaperWallet } from './paper.js';
 import { extractSocials, metadataCandidates, pumpUsername, type DevInfo, type Socials } from './socials.js';
 import { ConfigError, explainRpcError, isBrowserHostile, RetryableError } from './rpc-errors.js';
 
@@ -30,6 +31,8 @@ export interface Settings {
   autoScan: boolean;
   /** Installe d'elle-même les nouvelles versions (nécessite l'assistant de mise à jour). */
   autoUpdate: boolean;
+  /** Lit les positions de paper trading DryFlip affichées sur la page. */
+  paperTracking: boolean;
 }
 
 /**
@@ -48,6 +51,7 @@ const DEFAULTS: Settings = {
   holderCensus: true,
   autoScan: true,
   autoUpdate: true,
+  paperTracking: true,
 };
 
 const REPO = 'awaping/solana-token-risk-scanner';
@@ -86,6 +90,8 @@ interface Flight {
   task: Promise<ScanOutcome>;
   controller: AbortController;
   waiters: number;
+  /** Analyse d'entrée ou de suivi : jamais annulée quand l'onglet passe à un autre token. */
+  keep?: boolean;
 }
 const inFlight = new Map<string, Flight>();
 /** Dernier token demandé par chaque onglet. */
@@ -123,7 +129,7 @@ function release(mint: string): void {
   const flight = inFlight.get(mint);
   if (!flight) return;
   flight.waiters--;
-  if (flight.waiters <= 0) flight.controller.abort();
+  if (flight.waiters <= 0 && !flight.keep) flight.controller.abort();
 }
 
 // ---------------------------------------------------------------------------
@@ -132,10 +138,15 @@ function release(mint: string): void {
 
 /**
  * Analyse un token. `force` (bouton « Actualiser » du panneau) ignore le cache
- * pour relire la blockchain tout de suite.
+ * pour relire la blockchain tout de suite. `trigger` : origine de l'analyse,
+ * gardée dans l'historique (une analyse « entrée » est rattachée à l'achat paper).
  */
-export async function scan(mintArg: string, tabId?: number, force = false): Promise<ScanOutcome> {
+export async function scan(mintArg: string, tabId?: number, force = false, trigger?: ScanTrigger): Promise<ScanOutcome> {
+  const requestedAt = Date.now();
   const mint = parseMint(mintArg).toBase58();
+  const origin: ScanTrigger = trigger ?? (force ? 'actualisation' : 'ouverture');
+  // Achat ou suivi : une mesure fraîche et à part, qui ne se greffe pas sur un scan déjà lancé.
+  const own = origin === 'entrée' || origin === 'suivi';
 
   // Token précédent de cet onglet : l'utilisateur l'a quitté, son scan peut être annulé.
   const previous = tabId !== undefined ? tabTokens.get(tabId) : undefined;
@@ -148,7 +159,7 @@ export async function scan(mintArg: string, tabId?: number, force = false): Prom
   if (!force && hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.outcome;
 
   const running = inFlight.get(mint);
-  if (running && !running.controller.signal.aborted) {
+  if (!own && running && !running.controller.signal.aborted) {
     // Même onglet qui redemande le même token : il est déjà compté parmi les attentes.
     const alreadyWaiting = tabId !== undefined && previous === mint;
     if (!alreadyWaiting) running.waiters++;
@@ -176,7 +187,7 @@ export async function scan(mintArg: string, tabId?: number, force = false): Prom
   }, { rpc })
     .then(async (result) => {
       // Enregistrée avant la réponse : le panneau affiche aussitôt l'évolution de la note.
-      const brief = await history.record(toSnapshot(result)).catch(() => undefined);
+      const brief = await history.record(toSnapshot(result, Date.now(), { trigger: origin, requestedAt })).catch(() => undefined);
       const outcome: ScanOutcome = { result, ...(brief ? { brief } : {}) };
       remember(mint, outcome);
       return outcome;
@@ -188,7 +199,7 @@ export async function scan(mintArg: string, tabId?: number, force = false): Prom
       if (inFlight.get(mint)?.task === task) inFlight.delete(mint);
     });
 
-  inFlight.set(mint, { task, controller, waiters: 1 });
+  inFlight.set(mint, { task, controller, waiters: own ? 0 : 1, ...(own ? { keep: true } : {}) });
   return task;
 }
 
@@ -364,6 +375,117 @@ async function flagUpdate(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Paper trading (DryFlip)
+// ---------------------------------------------------------------------------
+
+/** Montant reçu du content script : seuls des nombres finis et des unités connues passent. */
+function cleanAmount(value: unknown): PaperPosition['bought'] {
+  const a = value as { value?: unknown; unit?: unknown } | undefined;
+  if (!a || typeof a.value !== 'number' || !Number.isFinite(a.value)) return undefined;
+  const unit = ['SOL', 'BNB', 'ETH', 'USD', ''].includes(String(a.unit)) ? (String(a.unit) as NonNullable<PaperPosition['bought']>['unit']) : '';
+  return { value: a.value, unit };
+}
+
+function cleanPosition(value: unknown): PaperPosition {
+  const p = (value ?? {}) as Record<string, unknown>;
+  const out: PaperPosition = {};
+  for (const key of ['bought', 'sold', 'remaining', 'pnl'] as const) {
+    const amount = cleanAmount(p[key]);
+    if (amount) out[key] = amount;
+  }
+  if (typeof p.pnlPct === 'number' && Number.isFinite(p.pnlPct)) out.pnlPct = p.pnlPct;
+  return out;
+}
+
+export interface PaperReply {
+  ok: boolean;
+  /** Achat vu : l'analyse d'entrée a été faite, voici son résultat pour le panneau. */
+  result?: ReturnType<typeof toPanelResult>;
+  /** Opérations enregistrées sur ce token, avec l'âge du token à chacune. */
+  trades?: Array<{ kind: 'achat' | 'vente'; at: number; observed: boolean; tokenAgeSec?: number; closes?: boolean }>;
+  deadAtOpen?: string;
+  error?: string;
+}
+
+async function handlePaper(request: { mint?: string; position?: unknown; wallet?: unknown; at?: number; observed?: boolean; vanished?: boolean }): Promise<PaperReply> {
+  const at = typeof request.at === 'number' && Math.abs(request.at - Date.now()) < 120_000 ? request.at : Date.now();
+  const balance = cleanAmount((request.wallet as PaperWallet | undefined)?.balance);
+  if (balance) {
+    const pnl = cleanAmount((request.wallet as PaperWallet).pnl);
+    await history.setWallet({ balance, ...(pnl ? { pnl } : {}) }, at);
+  }
+  if (!request.mint || (!request.position && !request.vanished)) return { ok: true };
+  const mint = parseMint(request.mint).toBase58();
+  const change = await history.attachPaper(mint, cleanPosition(request.position), {
+    at,
+    observed: request.observed === true,
+    vanished: request.vanished === true,
+  });
+  if (!change.known) return { ok: false, error: 'token pas encore analysé' };
+
+  const coin = await history.get(mint);
+  if (change.firstBuy && !coin?.deadAtOpen) {
+    // Le token est ré-analysé ensuite à intervalles : c'est ce qui dira s'il a « run » ou « rug ».
+    await history.scheduleFollowUps(mint, at);
+    armFollowUps();
+  }
+  const reply: PaperReply = {
+    ok: true,
+    trades: (coin?.paper?.trades ?? []).map((t) => ({
+      kind: t.kind,
+      at: t.at,
+      observed: t.observed,
+      ...(t.tokenAgeSec !== undefined ? { tokenAgeSec: t.tokenAgeSec } : {}),
+      ...(t.closes ? { closes: true } : {}),
+    })),
+    ...(coin?.deadAtOpen ? { deadAtOpen: coin.deadAtOpen.reason } : {}),
+  };
+  // Achat vu en direct : analyse complète immédiate, gardée avec l'achat (les données exactes du IN).
+  if (change.buy && request.observed) {
+    try {
+      const { result, brief } = await scan(mint, undefined, true, 'entrée');
+      reply.result = toPanelResult(result, brief);
+    } catch (error) {
+      reply.error = error instanceof Error ? error.message : String(error);
+    }
+  }
+  return reply;
+}
+
+const FOLLOW_UP_ALARM = 'paper-followups';
+let followUpsRunning = false;
+
+/** Réveil chaque minute tant que des ré-analyses sont en attente (survit à la mise en veille du service worker). */
+function armFollowUps(): void {
+  chrome.alarms?.create(FOLLOW_UP_ALARM, { periodInMinutes: 1 });
+}
+
+/** Ré-analyses de suivi arrivées à échéance, une à la fois (débit RPC partagé avec les onglets). */
+async function runFollowUps(): Promise<void> {
+  if (followUpsRunning) return;
+  followUpsRunning = true;
+  try {
+    const list = await history.followUps();
+    if (list.length === 0) {
+      await chrome.alarms?.clear(FOLLOW_UP_ALARM);
+      return;
+    }
+    const due: FollowUp[] = list.filter((f) => f.due <= Date.now()).sort((a, b) => a.due - b.due);
+    for (const item of due) {
+      let ok = true;
+      try {
+        await scan(item.mint, undefined, true, 'suivi');
+      } catch {
+        ok = false;
+      }
+      await history.settleFollowUp(item, ok);
+    }
+  } finally {
+    followUpsRunning = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
 
@@ -374,7 +496,8 @@ type Request =
   | { type: 'settings' }
   | { type: 'open-options' }
   | { type: 'open-history'; mint?: string }
-  | { type: 'socials'; mint: string; uri?: string; creator?: string };
+  | { type: 'socials'; mint: string; uri?: string; creator?: string }
+  | { type: 'paper'; mint?: string; position?: unknown; wallet?: unknown; at?: number; observed?: boolean; vanished?: boolean };
 
 chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) => {
   // `sendResponse` asynchrone impose de renvoyer `true` : sans ça, Chrome
@@ -417,6 +540,12 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
       .catch(() => sendResponse({ ok: true, socials: {} }));
     return true;
   }
+  if (request.type === 'paper') {
+    handlePaper(request)
+      .then((reply) => sendResponse(reply))
+      .catch((error: unknown) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
   if (request.type === 'open-history') {
     const hash = request.mint ? `#${encodeURIComponent(request.mint)}` : '';
     void chrome.tabs.create({ url: chrome.runtime.getURL(`history.html${hash}`) });
@@ -437,9 +566,16 @@ const ALARM = 'update-check';
 function scheduleChecks(): void {
   chrome.alarms?.create(ALARM, { periodInMinutes: 180 });
   void flagUpdate();
+  // Ré-analyses de suivi en attente (le navigateur a pu être fermé entre-temps) : reprises.
+  void history.followUps().then((list) => {
+    if (list.length === 0) return;
+    armFollowUps();
+    void runFollowUps();
+  });
 }
 chrome.runtime.onStartup?.addListener(scheduleChecks);
 chrome.runtime.onInstalled?.addListener(scheduleChecks);
 chrome.alarms?.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM) void flagUpdate();
+  if (alarm.name === FOLLOW_UP_ALARM) void runFollowUps();
 });

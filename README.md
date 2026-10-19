@@ -16,7 +16,7 @@ Trois façons de l'utiliser :
 |---|---|---|---|
 | **Scan** | `npm run scan -- <MINT>` | Audit complet d'un token donné : 6 modules on-chain | quelques secondes |
 | **Stream** | `npm run stream [blockchain]` | Surveille **tous** les nouveaux lancements en direct et affiche un **classement live des tokens actifs** (trades, volume, momentum) avec leur niveau de risque | Solana : ~20–300 µs de calcul après réception |
-| **Extension Chrome** | `extension/` | Affiche la note du token ouvert sur pump.fun, Axiom, GMGN, DexScreener… avec un bouton pour l'actualiser, garde l'historique de chaque analyse (courbe de la note) et se met à jour en un clic. Voir [extension/README.md](extension/README.md) | quelques secondes par analyse |
+| **Extension Chrome** | `extension/` | Affiche la note et l'âge du token ouvert sur pump.fun, Axiom, GMGN, DexScreener… avec un bouton pour l'actualiser, garde l'historique de chaque analyse (courbe de la note), suit tes positions de paper trading DryFlip (analyse au moment du IN, issue run / rug, comparaison des deux) et se met à jour en un clic. Voir [extension/README.md](extension/README.md) | quelques secondes par analyse |
 
 Le mode stream fonctionne sur **19 blockchains**, soit tous les réseaux actifs sur Based Bot : **Solana** (Pump.fun) et **18 chaînes EVM** (Ethereum, Base, BNB Chain, Robinhood Chain, Arbitrum, Monad…). Il suffit de nommer la chaîne :
 
