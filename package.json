@@ -1,6 +1,6 @@
 {
   "name": "solana-token-risk-scanner",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Scanner open-source de risques et de liquidité pour tokens Solana (bonding curves Pump.fun, PumpSwap, Raydium) : distribution des holders, clustering de wallets, dusting, réserve réelle, traçabilité du créateur et score de risque 0-100.",
   "type": "module",
   "bin": {
@@ -22,6 +22,7 @@
     "demo": "tsx scripts/demo.ts",
     "demo:stream": "tsx scripts/demo-stream.ts",
     "bench": "tsx scripts/bench.ts",
+    "bench:scan": "tsx scripts/bench-scan.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit && tsc -p extension/tsconfig.json",

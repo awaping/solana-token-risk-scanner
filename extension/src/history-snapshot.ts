@@ -20,6 +20,7 @@ export function toSnapshot(result: ScanResult, at = Date.now(), options: { trigg
   const dusting = result.dusting.status === 'ok' ? result.dusting.data : undefined;
   const reserve = result.reserve.status === 'ok' ? result.reserve.data : undefined;
   const creator = result.creator.status === 'ok' ? result.creator.data : undefined;
+  const fresh = result.fresh?.status === 'ok' ? result.fresh.data : undefined;
 
   const whales = holders?.wallets.filter(
     (w) => w.kind !== 'creator' && w.kind !== 'program' && w.pct >= CONCENTRATION.WHALE_SUPPLY_PCT,
@@ -49,6 +50,7 @@ export function toSnapshot(result: ScanResult, at = Date.now(), options: { trigg
       : {}),
     ...(clustering?.largestCluster ? { largestClusterSize: clustering.largestCluster.owners.length } : {}),
     ...(result.tokenAge ? { mintTxCount: result.tokenAge.transactions } : {}),
+    ...(fresh ? { freshPct: fresh.freshPct, freshCount: fresh.fresh.length } : {}),
   };
 
   const alerts = risk.modules

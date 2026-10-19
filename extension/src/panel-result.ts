@@ -26,6 +26,10 @@ export interface PanelResult {
   history?: HistoryBrief;
   /** Création du token (ms) ; exact = false : borne (le token est au moins aussi vieux). */
   tokenAge?: { createdAt: number; exact: boolean };
+  /** Wallets frais parmi les gros holders : part de la supply, nombre trouvé / examinés. */
+  fresh?: { pct: number; count: number; checked: number };
+  /** Note provisoire : analyses encore en cours. */
+  pending?: Array<'creator' | 'fresh'>;
 }
 
 export function toPanelResult(result: ScanResult, history?: HistoryBrief): PanelResult {
@@ -38,7 +42,7 @@ export function toPanelResult(result: ScanResult, history?: HistoryBrief): Panel
       ...(token.symbol ? { symbol: token.symbol } : {}),
       ...(token.metadataUri ? { uri: token.metadataUri } : {}),
     },
-    ...(result.creator.status === 'ok' ? { creator: result.creator.data.address } : {}),
+    ...(result.creator.status === 'ok' ? { creator: result.creator.data.address } : result.earlyCreator ? { creator: result.earlyCreator } : {}),
     ...(result.resolvedFrom ? { resolvedFrom: { address: result.resolvedFrom.address, kind: result.resolvedFrom.kind } } : {}),
     risk: {
       score: risk.score,
@@ -53,6 +57,8 @@ export function toPanelResult(result: ScanResult, history?: HistoryBrief): Panel
     },
     ...(history ? { history } : {}),
     ...(result.tokenAge ? { tokenAge: { createdAt: result.tokenAge.createdAt.getTime(), exact: result.tokenAge.exact } } : {}),
+    ...(result.fresh?.status === 'ok' ? { fresh: { pct: result.fresh.data.freshPct, count: result.fresh.data.fresh.length, checked: result.fresh.data.checked } } : {}),
+    ...(result.pending?.length ? { pending: [...result.pending] } : {}),
   };
 }
 

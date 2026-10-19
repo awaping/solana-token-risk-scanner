@@ -17,7 +17,8 @@ import { compareVersions } from '../../src/update/version.js';
 import { chromeLocalStore } from './chrome-store.js';
 import { HistoryStore, type FollowUp, type HistoryBrief, type ScanTrigger } from './history-store.js';
 import { toSnapshot } from './history-snapshot.js';
-import { toPanelResult } from './panel-result.js';
+import { toPanelResult, type PanelResult } from './panel-result.js';
+import { sessionCache } from './session-cache.js';
 import type { PaperPosition, PaperWallet } from './paper.js';
 import { extractSocials, metadataCandidates, pumpUsername, type DevInfo, type Socials } from './socials.js';
 import { ConfigError, explainRpcError, isBrowserHostile, RetryableError } from './rpc-errors.js';
@@ -33,6 +34,10 @@ export interface Settings {
   autoUpdate: boolean;
   /** Lit les positions de paper trading DryFlip affichées sur la page. */
   paperTracking: boolean;
+  /** Débit autorisé par l'offre RPC (requêtes/s) : décide de la vitesse des analyses. */
+  rpcRps: number;
+  /** Lance l'analyse d'un token dès que la souris s'attarde sur son lien. */
+  prefetch: boolean;
 }
 
 /**
@@ -52,6 +57,9 @@ const DEFAULTS: Settings = {
   autoScan: true,
   autoUpdate: true,
   paperTracking: true,
+  // Helius gratuit : 10 requêtes/s ; 9 garde une marge contre les 429.
+  rpcRps: 9,
+  prefetch: true,
 };
 
 const REPO = 'awaping/solana-token-risk-scanner';
@@ -84,6 +92,26 @@ const cache = new Map<string, CacheEntry>();
 export interface ScanOutcome {
   result: ScanResult;
   brief?: HistoryBrief;
+  /**
+   * Enregistrée dans l'historique. Une pré-analyse (survol) ne l'est pas : elle
+   * ne l'est qu'au moment où la page du token est réellement ouverte.
+   */
+  recorded: boolean;
+  recording?: Promise<void>;
+}
+
+/** Enregistre dans l'historique une analyse faite par pré-analyse, à l'ouverture effective de la page. */
+async function ensureRecorded(mint: string, outcome: ScanOutcome, requestedAt: number): Promise<ScanOutcome> {
+  if (outcome.recorded) return outcome;
+  outcome.recording ??= history
+    .record(toSnapshot(outcome.result, Date.now(), { trigger: 'ouverture', requestedAt }))
+    .then((brief) => {
+      outcome.brief = brief;
+      outcome.recorded = true;
+    })
+    .catch(() => undefined);
+  await outcome.recording;
+  return outcome;
 }
 
 interface Flight {
@@ -92,10 +120,16 @@ interface Flight {
   waiters: number;
   /** Analyse d'entrée ou de suivi : jamais annulée quand l'onglet passe à un autre token. */
   keep?: boolean;
+  /** Onglets qui attendent ce résultat : ils reçoivent la note provisoire. */
+  tabs: Set<number>;
+  /** Dernière note provisoire, remise aussitôt à un onglet qui rejoint l'analyse. */
+  partial?: PanelResult;
 }
 const inFlight = new Map<string, Flight>();
-/** Dernier token demandé par chaque onglet. */
-const tabTokens = new Map<number, string>();
+/** Dernier token demandé par chaque onglet : celui de la page, et celui survolé (pré-analyse). */
+const tabTokens = new Map<string, string>();
+/** Transactions de devs et activité des wallets déjà lues (survit à la veille du service worker). */
+const scanCache = sessionCache();
 
 /** Chaque analyse (initiale ou actualisation) est conservée pour suivre l'évolution du token. */
 const history = new HistoryStore(chromeLocalStore());
@@ -112,16 +146,27 @@ function remember(mint: string, outcome: ScanOutcome): void {
 /**
  * Un seul client RPC par endpoint, partagé par tous les scans : le plafond de
  * débit vaut pour l'ensemble des onglets, pas pour chaque analyse séparément.
- * 8 requêtes/s laisse de la marge sous la limite des offres gratuites (≈ 10/s).
+ * Le débit suit l'offre RPC choisie dans les réglages (9 requêtes/s par
+ * défaut, sous la limite de 10/s de l'offre gratuite Helius).
  */
 const clients = new Map<string, RpcClient>();
-function clientFor(url: string): RpcClient {
-  let client = clients.get(url);
+function clientFor(url: string, rps: number): RpcClient {
+  const key = `${rps}|${url}`;
+  let client = clients.get(key);
   if (!client) {
-    client = new RpcClient({ url, concurrency: 3, maxRetries: 4, maxRps: 8 });
-    clients.set(url, client);
+    const maxRps = Math.max(1, rps);
+    client = new RpcClient({ url, concurrency: Math.min(16, Math.max(4, Math.ceil(maxRps / 3))), maxRetries: 4, maxRps });
+    clients.set(key, client);
   }
   return client;
+}
+
+/** Note provisoire envoyée aux onglets qui attendent ce token. */
+function deliverPartial(mint: string, flight: Flight, tabs: Iterable<number> = flight.tabs): void {
+  if (!flight.partial) return;
+  for (const tab of tabs) {
+    void chrome.tabs?.sendMessage(tab, { type: 'scan-partial', address: mint, result: flight.partial }).catch(() => undefined);
+  }
 }
 
 /** L'onglet ne regarde plus ce token : son scan est annulé si personne d'autre ne l'attend. */
@@ -136,34 +181,47 @@ function release(mint: string): void {
 // Scan
 // ---------------------------------------------------------------------------
 
-/**
- * Analyse un token. `force` (bouton « Actualiser » du panneau) ignore le cache
- * pour relire la blockchain tout de suite. `trigger` : origine de l'analyse,
- * gardée dans l'historique (une analyse « entrée » est rattachée à l'achat paper).
- */
-export async function scan(mintArg: string, tabId?: number, force = false, trigger?: ScanTrigger): Promise<ScanOutcome> {
+export interface ScanRequest {
+  tabId?: number;
+  /** Bouton « Actualiser » : ignore le cache et relit la blockchain tout de suite. */
+  force?: boolean;
+  /** Origine de l'analyse, gardée dans l'historique (« entrée » est rattachée à l'achat paper). */
+  trigger?: ScanTrigger;
+  /** Pré-analyse au survol d'un lien : priorité basse, sans effet sur l'analyse de la page. */
+  prefetch?: boolean;
+}
+
+/** Analyse un token (voir ScanRequest). */
+export async function scan(mintArg: string, request: ScanRequest = {}): Promise<ScanOutcome> {
+  const { tabId, force = false, trigger, prefetch = false } = request;
   const requestedAt = Date.now();
   const mint = parseMint(mintArg).toBase58();
   const origin: ScanTrigger = trigger ?? (force ? 'actualisation' : 'ouverture');
   // Achat ou suivi : une mesure fraîche et à part, qui ne se greffe pas sur un scan déjà lancé.
   const own = origin === 'entrée' || origin === 'suivi';
 
-  // Token précédent de cet onglet : l'utilisateur l'a quitté, son scan peut être annulé.
-  const previous = tabId !== undefined ? tabTokens.get(tabId) : undefined;
-  if (tabId !== undefined) {
-    tabTokens.set(tabId, mint);
+  // Token précédent de cet onglet (page ou survol) : quitté, son scan peut être annulé.
+  const slot = tabId !== undefined ? `${tabId}:${prefetch ? 'survol' : 'page'}` : undefined;
+  const previous = slot ? tabTokens.get(slot) : undefined;
+  if (slot) {
+    tabTokens.set(slot, mint);
     if (previous && previous !== mint) release(previous);
   }
 
   const hit = cache.get(mint);
-  if (!force && hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.outcome;
+  if (!force && hit && Date.now() - hit.at < CACHE_TTL_MS) return prefetch ? hit.outcome : ensureRecorded(mint, hit.outcome, requestedAt);
 
   const running = inFlight.get(mint);
   if (!own && running && !running.controller.signal.aborted) {
     // Même onglet qui redemande le même token : il est déjà compté parmi les attentes.
-    const alreadyWaiting = tabId !== undefined && previous === mint;
+    const alreadyWaiting = slot !== undefined && previous === mint;
     if (!alreadyWaiting) running.waiters++;
-    return running.task;
+    if (tabId !== undefined) {
+      running.tabs.add(tabId);
+      // La page qui s'ouvre sur un token pré-analysé reçoit aussitôt la note provisoire déjà calculée.
+      deliverPartial(mint, running, [tabId]);
+    }
+    return prefetch ? running.task : running.task.then((outcome) => ensureRecorded(mint, outcome, requestedAt));
   }
 
   const settings = await getSettings();
@@ -174,7 +232,10 @@ export async function scan(mintArg: string, tabId?: number, force = false, trigg
   }
 
   const controller = new AbortController();
-  const rpc = clientFor(settings.rpcUrl).scoped(controller.signal);
+  // La page ouverte et l'achat passent avant les pré-analyses et les suivis.
+  const priority = prefetch || origin === 'suivi' ? 'low' : 'high';
+  const rpc = clientFor(settings.rpcUrl, settings.rpcRps).scoped(controller.signal, priority);
+  const flight: Flight = { task: undefined as unknown as Promise<ScanOutcome>, controller, waiters: own ? 0 : 1, tabs: new Set(tabId !== undefined ? [tabId] : []), ...(own ? { keep: true } : {}) };
   const task = scanToken(mint, {
     rpcUrl: settings.rpcUrl,
     concurrency: 3,
@@ -184,11 +245,20 @@ export async function scan(mintArg: string, tabId?: number, force = false, trigg
     creatorTxScanLimit: 30,
     mintHistoryMaxPages: 3,
     holderCensus: settings.holderCensus,
-  }, { rpc })
+  }, {
+    rpc,
+    cache: scanCache,
+    // Note provisoire (sans l'historique du dev ni les wallets frais) : affichée tout de suite.
+    onPartial: (partial) => {
+      flight.partial = toPanelResult(partial);
+      deliverPartial(mint, flight);
+    },
+  })
     .then(async (result) => {
       // Enregistrée avant la réponse : le panneau affiche aussitôt l'évolution de la note.
-      const brief = await history.record(toSnapshot(result, Date.now(), { trigger: origin, requestedAt })).catch(() => undefined);
-      const outcome: ScanOutcome = { result, ...(brief ? { brief } : {}) };
+      // Une pré-analyse attend que la page soit ouverte pour entrer dans l'historique.
+      const brief = prefetch ? undefined : await history.record(toSnapshot(result, Date.now(), { trigger: origin, requestedAt })).catch(() => undefined);
+      const outcome: ScanOutcome = { result, recorded: !prefetch, ...(brief ? { brief } : {}) };
       remember(mint, outcome);
       return outcome;
     })
@@ -199,7 +269,8 @@ export async function scan(mintArg: string, tabId?: number, force = false, trigg
       if (inFlight.get(mint)?.task === task) inFlight.delete(mint);
     });
 
-  inFlight.set(mint, { task, controller, waiters: own ? 0 : 1, ...(own ? { keep: true } : {}) });
+  flight.task = task;
+  inFlight.set(mint, flight);
   return task;
 }
 
@@ -268,7 +339,8 @@ async function fetchJson(url: string, timeoutMs: number, maxBytes = 64 * 1024): 
  * ni la note ni son délai n'en dépendent.
  */
 function loadSocials(mint: string, uri: string | undefined, creator: string | undefined): Promise<SocialsReply> {
-  const cached = socialsCache.get(mint);
+  const key = `${mint}|${creator ?? ''}`;
+  const cached = socialsCache.get(key);
   if (cached && Date.now() - cached.at < SOCIALS_TTL_MS) return cached.reply;
   const reply = (async (): Promise<SocialsReply> => {
     // Adresse validée avant d'entrer dans une URL.
@@ -285,7 +357,7 @@ function loadSocials(mint: string, uri: string | undefined, creator: string | un
       .catch(() => undefined);
     return { ok: true, socials, ...(devInfo ? { dev: devInfo } : {}), ...(metadata.blocked ? { blocked: metadata.blocked } : {}) };
   })();
-  socialsCache.set(mint, { at: Date.now(), reply });
+  socialsCache.set(key, { at: Date.now(), reply });
   return reply;
 }
 
@@ -445,7 +517,7 @@ async function handlePaper(request: { mint?: string; position?: unknown; wallet?
   // Achat vu en direct : analyse complète immédiate, gardée avec l'achat (les données exactes du IN).
   if (change.buy && request.observed) {
     try {
-      const { result, brief } = await scan(mint, undefined, true, 'entrée');
+      const { result, brief } = await scan(mint, { force: true, trigger: 'entrée' });
       reply.result = toPanelResult(result, brief);
     } catch (error) {
       reply.error = error instanceof Error ? error.message : String(error);
@@ -476,7 +548,7 @@ async function runFollowUps(): Promise<void> {
     for (const item of due) {
       let ok = true;
       try {
-        await scan(item.mint, undefined, true, 'suivi');
+        await scan(item.mint, { force: true, trigger: 'suivi' });
       } catch {
         ok = false;
       }
@@ -492,7 +564,7 @@ async function runFollowUps(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 type Request =
-  | { type: 'scan'; mint: string; force?: boolean }
+  | { type: 'scan'; mint: string; force?: boolean; prefetch?: boolean }
   | { type: 'update' }
   | { type: 'apply-update' }
   | { type: 'settings' }
@@ -505,7 +577,7 @@ chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) =
   // `sendResponse` asynchrone impose de renvoyer `true` : sans ça, Chrome
   // ferme le canal avant la réponse et l'appelant reçoit `undefined`.
   if (request.type === 'scan') {
-    scan(request.mint, _sender.tab?.id, request.force === true)
+    scan(request.mint, { ...(_sender.tab?.id !== undefined ? { tabId: _sender.tab.id } : {}), force: request.force === true, prefetch: request.prefetch === true })
       // Résultat réduit à ce qu'affiche le panneau : un ScanResult complet contient des
       // BigInt que la messagerie de Chrome ne sait pas sérialiser.
       .then(({ result, brief }) => sendResponse({ ok: true, result: toPanelResult(result, brief) }))

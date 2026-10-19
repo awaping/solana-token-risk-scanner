@@ -1,7 +1,7 @@
 /** Page d'options : réglages persistés et état de mise à jour. */
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const DEFAULTS = { rpcUrl: '', holderCensus: true, autoScan: true, autoUpdate: true, paperTracking: true };
+const DEFAULTS = { rpcUrl: '', holderCensus: true, autoScan: true, autoUpdate: true, paperTracking: true, rpcRps: 9, prefetch: true };
 
 /** Endpoints publics qui répondent 403 à toute requête d'origine navigateur. */
 const BROWSER_HOSTILE = /(^|.)api.(mainnet-beta|devnet|testnet).solana.com$/;
@@ -29,6 +29,12 @@ void (async () => {
   $<HTMLInputElement>('census').checked = Boolean(settings.holderCensus);
   $<HTMLInputElement>('auto').checked = settings.autoScan !== false;
   $<HTMLInputElement>('paper').checked = settings.paperTracking !== false;
+  $<HTMLInputElement>('prefetch').checked = settings.prefetch !== false;
+  const plan = $<HTMLSelectElement>('plan');
+  const rps = Number(settings.rpcRps) || DEFAULTS.rpcRps;
+  // Débit enregistré absent de la liste (version précédente, valeur à la main) : ajouté tel quel.
+  if (![...plan.options].some((o) => Number(o.value) === rps)) plan.append(new Option(`${rps} requêtes/s`, String(rps)));
+  plan.value = String(rps);
 
   $('save').addEventListener('click', async () => {
     const rpcUrl = $<HTMLInputElement>('rpc').value.trim();
@@ -53,6 +59,8 @@ void (async () => {
       holderCensus: $<HTMLInputElement>('census').checked,
       autoScan: $<HTMLInputElement>('auto').checked,
       paperTracking: $<HTMLInputElement>('paper').checked,
+      prefetch: $<HTMLInputElement>('prefetch').checked,
+      rpcRps: Number($<HTMLSelectElement>('plan').value) || DEFAULTS.rpcRps,
     });
     const granted = await requestAccess(rpcUrl);
     status.textContent = granted ? 'enregistré' : "enregistré (accès à l'hôte refusé)";

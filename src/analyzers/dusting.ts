@@ -62,11 +62,19 @@ export function summarizeDusting(
   };
 }
 
-export async function analyzeDusting(
-  rpc: RpcClient,
-  token: TokenInfo,
-  thresholdPct = DEFAULT_DUST_THRESHOLD_PCT,
-): Promise<DustingAnalysis> {
+/** Un compte de token du recensement : adresse, propriétaire (32 octets bruts), solde. */
+export interface CensusAccount {
+  address: PublicKey;
+  owner: Buffer;
+  amount: bigint;
+}
+
+/**
+ * Recense tous les comptes de token du mint en une requête (getProgramAccounts
+ * filtré sur le mint, ne rapatriant que owner + amount). Sert au dusting check
+ * ET au classement des holders, sans getTokenLargestAccounts.
+ */
+export async function fetchCensus(rpc: RpcClient, token: TokenInfo): Promise<CensusAccount[]> {
   const programId = new PublicKey(token.programId);
   const isLegacyToken = programId.equals(TOKEN_PROGRAM_ID);
 
@@ -83,17 +91,30 @@ export async function analyzeDusting(
     }),
   );
 
-  const balances: TokenAccountBalance[] = [];
-  for (const { account } of accounts) {
+  const census: CensusAccount[] = [];
+  for (const { pubkey, account } of accounts) {
     const data = account.data;
     if (data.length < 40) continue;
-    balances.push({
-      // Clé d'agrégation seulement : le base64 brut évite d'encoder en base58 des
-      // dizaines de milliers d'adresses (coûteux dans le service worker).
-      owner: data.subarray(0, 32).toString('base64'),
-      amount: data.readBigUInt64LE(32),
-    });
+    census.push({ address: pubkey, owner: data.subarray(0, 32), amount: data.readBigUInt64LE(32) });
   }
+  return census;
+}
 
-  return summarizeDusting(balances, token.supply, thresholdPct);
+/** Dusting à partir du recensement. */
+export function dustingFromCensus(census: CensusAccount[], supply: bigint, thresholdPct = DEFAULT_DUST_THRESHOLD_PCT): DustingAnalysis {
+  // Clé d'agrégation seulement : le base64 brut évite d'encoder en base58 des
+  // dizaines de milliers d'adresses (coûteux dans le service worker).
+  return summarizeDusting(
+    census.map((c) => ({ owner: c.owner.toString('base64'), amount: c.amount })),
+    supply,
+    thresholdPct,
+  );
+}
+
+export async function analyzeDusting(
+  rpc: RpcClient,
+  token: TokenInfo,
+  thresholdPct = DEFAULT_DUST_THRESHOLD_PCT,
+): Promise<DustingAnalysis> {
+  return dustingFromCensus(await fetchCensus(rpc, token), token.supply, thresholdPct);
 }

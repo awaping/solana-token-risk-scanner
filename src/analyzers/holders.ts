@@ -17,6 +17,7 @@ import {
 import type { RpcClient } from '../rpc/client.js';
 import type { Holder, HolderKind, HoldersAnalysis, TokenInfo } from '../types.js';
 import { percentOf } from '../utils/math.js';
+import type { CensusAccount } from './dusting.js';
 import { bondingCurvePda } from './pumpfun.js';
 
 export interface HolderContext {
@@ -103,7 +104,7 @@ export async function analyzeHolders(
 
   // 1. Propriétaire de chaque compte de token.
   const tokenInfos = await rpc.call((c) => c.getMultipleAccountsInfo(accounts.map((a) => a.address)));
-  const byOwner = new Map<string, { amount: bigint; tokenAccounts: string[] }>();
+  const byOwner: OwnerTotals = new Map();
   accounts.forEach((entry, i) => {
     const info = tokenInfos[i] ?? null;
     let owner: string;
@@ -117,8 +118,44 @@ export async function analyzeHolders(
     current.tokenAccounts.push(entry.address.toBase58());
     byOwner.set(owner, current);
   });
+  return classifyHolders(rpc, token, byOwner, ctx);
+}
 
-  // 2. Nature de chaque propriétaire (wallet, PDA de pool, bonding curve...).
+type OwnerTotals = Map<string, { amount: bigint; tokenAccounts: string[] }>;
+
+/** Nombre de propriétaires retenus dans le classement. */
+const TOP_OWNERS = 20;
+
+/**
+ * Top holders à partir du recensement complet (déjà lu pour le dusting) : une
+ * seule requête de plus (nature des propriétaires) au lieu de trois.
+ */
+export async function holdersFromCensus(
+  rpc: RpcClient,
+  token: TokenInfo,
+  census: CensusAccount[],
+  ctx: HolderContext = {},
+): Promise<HoldersAnalysis> {
+  const totals = new Map<string, { owner: Buffer; amount: bigint; tokenAccounts: PublicKey[] }>();
+  for (const account of census) {
+    if (account.amount === 0n) continue;
+    const key = account.owner.toString('base64');
+    const current = totals.get(key) ?? { owner: account.owner, amount: 0n, tokenAccounts: [] };
+    current.amount += account.amount;
+    current.tokenAccounts.push(account.address);
+    totals.set(key, current);
+  }
+  const top = [...totals.values()].sort((a, b) => (b.amount > a.amount ? 1 : b.amount < a.amount ? -1 : 0)).slice(0, TOP_OWNERS);
+  if (top.length === 0) return summarizeHolders([]);
+  const byOwner: OwnerTotals = new Map(
+    top.map((t) => [new PublicKey(t.owner).toBase58(), { amount: t.amount, tokenAccounts: t.tokenAccounts.map((a) => a.toBase58()) }]),
+  );
+  return classifyHolders(rpc, token, byOwner, ctx);
+}
+
+/** Nature de chaque propriétaire (wallet, PDA de pool, bonding curve…) et métriques de concentration. */
+async function classifyHolders(rpc: RpcClient, token: TokenInfo, byOwner: OwnerTotals, ctx: HolderContext): Promise<HoldersAnalysis> {
+  const mint = new PublicKey(token.mint);
   const owners = [...byOwner.keys()];
   const ownerInfos: Array<AccountInfo<Buffer> | null> = await rpc.call((c) =>
     c.getMultipleAccountsInfo(owners.map((o) => new PublicKey(o))),

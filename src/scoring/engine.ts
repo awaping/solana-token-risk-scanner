@@ -14,6 +14,7 @@ import type {
   ClusteringAnalysis,
   CreatorAnalysis,
   DustingAnalysis,
+  FreshWalletsAnalysis,
   Finding,
   HoldersAnalysis,
   ModuleId,
@@ -41,7 +42,7 @@ export const MODULE_WEIGHTS: Record<ModuleId, number> = {
 export const MODULE_LABELS: Record<ModuleId, string> = {
   authorities: 'Autorités & extensions du mint',
   holders: 'Distribution des holders (Top 20)',
-  clustering: 'Clustering de wallets',
+  clustering: 'Clustering & wallets frais',
   dusting: 'Dusting (faux holders)',
   reserve: 'Réserve réelle & liquidité',
   creator: 'Traçabilité du créateur',
@@ -216,7 +217,31 @@ export function scoreHolders(h: HoldersAnalysis, creatorReported = false): SubSc
 // Clustering
 // ---------------------------------------------------------------------------
 
-export function scoreClustering(cl: ClusteringAnalysis, top20Pct: number): SubScore {
+/**
+ * Wallets frais parmi les gros holders : part de la supply qu'ils détiennent.
+ * Même famille de signal que les clusters (wallets d'initiés coordonnés).
+ */
+function scoreFresh(fresh: ModuleOutcome<FreshWalletsAnalysis> | undefined, findings: Finding[], floors: ScoreFloor[]): number {
+  if (!fresh) return 0;
+  if (fresh.status === 'unavailable') {
+    findings.push({ severity: 'info', message: `Wallets frais non vérifiés : ${fresh.reason}` });
+    return 0;
+  }
+  const f = fresh.data;
+  if (f.checked === 0) return 0;
+  const n = f.fresh.length;
+  const definition = `moins de ${f.maxAgeHours} h et de ${f.maxTransactions} transactions`;
+  if (n === 0) {
+    findings.push({ severity: 'ok', message: `Aucun wallet frais parmi les ${f.checked} plus gros holders (${definition})` });
+    return 0;
+  }
+  const message = `Wallets frais : ${plural(n, 'wallet')} sur ${f.checked} (${definition}) détiennent ${fmtPct(f.freshPct)} de la supply`;
+  findings.push({ severity: f.freshPct >= 20 ? 'critical' : f.freshPct >= 5 ? 'warning' : 'info', message });
+  if (f.freshPct >= 30) floors.push({ floor: 60, reason: `Wallets frais : ${fmtPct(f.freshPct)} de la supply` });
+  return piecewise(f.freshPct, [[2, 0], [5, 30], [10, 55], [20, 80], [30, 100]]);
+}
+
+export function scoreClustering(cl: ClusteringAnalysis, top20Pct: number, fresh?: ModuleOutcome<FreshWalletsAnalysis>): SubScore {
   const findings: Finding[] = [];
   const floors: ScoreFloor[] = [];
 
@@ -284,7 +309,8 @@ export function scoreClustering(cl: ClusteringAnalysis, top20Pct: number): SubSc
     findings.push({ severity: 'ok', message: `Aucun groupe de ≥ 3 wallets à parts identiques (±${fmtNum(cl.toleranceAbsPct, 1)} pt)` });
   }
 
-  return { score: clamp(Math.max(cvScore, clusterScore)), findings, floors };
+  const freshScore = scoreFresh(fresh, findings, floors);
+  return { score: clamp(Math.max(cvScore, clusterScore, freshScore)), findings, floors };
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +495,7 @@ export interface ScoringInput {
   token: TokenInfo;
   holders: ModuleOutcome<HoldersAnalysis>;
   clustering: ModuleOutcome<ClusteringAnalysis>;
+  fresh?: ModuleOutcome<FreshWalletsAnalysis>;
   dusting: ModuleOutcome<DustingAnalysis>;
   reserve: ModuleOutcome<ReserveAnalysis>;
   creator: ModuleOutcome<CreatorAnalysis>;
@@ -491,7 +518,7 @@ export function computeRiskScore(input: ScoringInput): RiskScore {
   const modules: ModuleScore[] = [
     toModuleScore('authorities', { status: 'ok', data: input.token }, scoreAuthorities, floors),
     toModuleScore('holders', input.holders, (d) => scoreHolders(d, input.creator.status === 'ok'), floors),
-    toModuleScore('clustering', input.clustering, (d) => scoreClustering(d, top20Pct), floors),
+    toModuleScore('clustering', input.clustering, (d) => scoreClustering(d, top20Pct, input.fresh), floors),
     toModuleScore('dusting', input.dusting, scoreDusting, floors),
     toModuleScore('reserve', input.reserve, scoreReserve, floors),
     toModuleScore('creator', input.creator, scoreCreator, floors),

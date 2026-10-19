@@ -36,6 +36,20 @@ test('résultat du panneau sérialisable en JSON, sans perte, y compris le mint 
   assert.equal(panel.resolvedFrom?.kind, 'bonding curve Pump.fun');
   assert.equal(panel.risk.score, result.risk.score);
   assert.equal(panel.risk.modules.length, result.risk.modules.length);
+  assert.deepEqual(panel.fresh, { pct: 0, count: 0, checked: result.fresh?.status === 'ok' ? result.fresh.data.checked : -1 });
+  assert.equal(panel.pending, undefined, 'note définitive');
+});
+
+test('note provisoire transmise au panneau avec ses analyses en cours', async () => {
+  const { chain, mint } = buildHealthyChain();
+  const { url, server } = await startMockRpc(chain);
+  servers.push(server);
+  let partial: ReturnType<typeof toPanelResult> | undefined;
+  await scanToken(mint.toBase58(), { rpcUrl: url, concurrency: 8, maxRetries: 0, creatorTxScanLimit: 50, mintHistoryMaxPages: 2, holderCensus: true }, {
+    onPartial: (r) => (partial = toPanelResult(r)),
+  });
+  assert.ok(partial?.pending?.length);
+  assert.deepEqual(JSON.parse(JSON.stringify(partial)), partial);
 });
 
 test('bandeau « note incomplète » : la vraie raison, pas un RPC accusé à tort', () => {

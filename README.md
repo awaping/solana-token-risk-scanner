@@ -54,7 +54,7 @@ Le scan ponctuel reste propre à Solana.
 |---|---|---|---|
 | 1 | **Autorités & extensions** | Mint authority / freeze authority encore actives, extensions Token-2022 dangereuses (`PermanentDelegate`, `TransferHook`, taxe de transfert, `Pausable`, `DefaultAccountState` gelé, `NonTransferable`…), métadonnées modifiables | `getMultipleAccounts` |
 | 2 | **Distribution des holders (Top 20)** | Top 20 des comptes, agrégés par propriétaire et classés (wallet, bonding curve, pool, burn, créateur, programme). Part cumulée du top 10 et du top 20 **hors comptes protocolaires**, part du plus gros wallet et part rapportée à la supply circulante | `getTokenLargestAccounts`, `getMultipleAccounts` |
-| 3 | **Clustering de wallets** | Moyenne, **variance**, **écart-type**, coefficient de variation (σ/μ) et indice de Gini des soldes du top 20. Détection de groupes de wallets aux parts identiques **à 0,1 point de % près**, et de **clones stricts** (soldes identiques à 0,1 % près) | aucun (calcul local) |
+| 3 | **Clustering & wallets frais** | Moyenne, **variance**, **écart-type**, coefficient de variation (σ/μ) et indice de Gini des soldes du top 20. Détection de groupes de wallets aux parts identiques **à 0,1 point de % près**, et de **clones stricts** (soldes identiques à 0,1 % près). **Wallets frais** : part de la supply détenue par des gros holders créés il y a moins de 24 h (moins de 30 transactions), signature d'un lancement « bundlé » | `getSignaturesForAddress` (12 plus gros wallets) |
 | 4 | **Dusting check** | Recensement de **tous** les comptes du mint : nombre réel de holders comparé au nombre de soldes infinitésimaux (**< 0,001 % de la supply**), pour détecter un compteur de holders gonflé artificiellement | `getProgramAccounts` (filtre mint + `dataSlice`) |
 | 5 | **Réserve réelle** | SOL **réellement** détenus par la bonding curve Pump.fun (vérifiés contre les lamports du compte, rent déduite) ou par les pools PumpSwap / Raydium AMM v4 / Raydium CPMM, comparés à la **capitalisation théorique** (prix spot × supply) | `getAccountInfo`, `getProgramAccounts`, `getMultipleAccounts` |
 | 6 | **Traçabilité du créateur** | Identification du déployeur (champ `creator` de la bonding curve, sinon première transaction du mint). Solde SOL restant, part du token encore détenue, âge et activité du wallet, **nombre de tokens déjà créés** (instructions `InitializeMint` signées) | `getSignaturesForAddress`, `getTransaction`, `getBalance`, `getTokenAccountsByOwner` |
@@ -527,7 +527,7 @@ Chaque métrique est convertie en score par **interpolation linéaire par morcea
 |---|---|---|
 | Autorités | 10 | Mint authority +60 · freeze authority +50 · extension critique +60 · extension à risque +25 · métadonnées modifiables +5 |
 | Holders | 25 | 30 % × top 10 (10 % → 0, 30 % → 50, 70 % → 100) + 30 % × top 20 (15 % → 0, 45 % → 60, 80 % → 100) + 40 % × plus gros wallet (2 % → 0, 10 % → 60, 30 % → 100) |
-| Clustering | 20 | max(uniformité, cluster). Uniformité : CV 0,1 → 100, 0,35 → 55, 0,7 → 0 (atténuée si le top 20 détient < 10 %). Cluster : 3 wallets → 35, 5 → 65, 10 → 100, pondéré par la part cumulée. Clones stricts : 3 → 80, ≥ 6 → 100 |
+| Clustering | 20 | max(uniformité, cluster, wallets frais). Uniformité : CV 0,1 → 100, 0,35 → 55, 0,7 → 0 (atténuée si le top 20 détient < 10 %). Cluster : 3 wallets → 35, 5 → 65, 10 → 100, pondéré par la part cumulée. Clones stricts : 3 → 80, ≥ 6 → 100. Wallets frais : 5 % de la supply → 30, 10 % → 55, 20 % → 80, 30 % → 100 (plancher 60 dès 30 %) |
 | Dusting | 10 | Ratio poussière/holders : 10 % → 0, 35 % → 50, 50 % → 75, 70 % → 100 (divisé par 2 si moins de 20 holders) |
 | Réserve | 20 | *Bonding curve* : 0,5 SOL → 70, 10 SOL → 35, 85 SOL → 5 (+40 si les lamports ne couvrent pas la réserve déclarée). *Pool* : 50 % liquidité absolue (1 SOL → 100, 50 SOL → 35, 300 SOL → 5) + 50 % ratio réserve/mcap (1 % → 100, 7 % → 45, 25 % → 0). Aucune réserve trouvée → 65 |
 | Créateur | 15 | Tokens déjà créés (1 → 20, 3 → 50, 5 → 70, 10 → 90, 20 → 100) + wallet jetable (< 15 tx) +15 + wallet de moins de 48 h +10 + créateur à 0 % +10 / > 10 % +25 / > 20 % +40 + wallet vidé (< 0,05 SOL) +10 |
@@ -572,15 +572,17 @@ L'outil combine deux mesures complémentaires :
 ```
 src/
 ├── index.ts              # CLI : scan (arguments, mode watch, codes de sortie) et sous-commande stream
-├── scanner.ts            # Orchestration parallèle des modules, isolation des erreurs
+├── scanner.ts            # Orchestration parallèle des modules, note provisoire, isolation des erreurs
+├── cache.ts              # Cache des transactions de créateurs et de l'activité des wallets
 ├── config.ts             # .env, options, masquage des clés d'API
 ├── constants.ts          # Programmes & adresses connus (Pump.fun, PumpSwap, Raydium, Orca, Meteora…)
 ├── types.ts              # Types partagés
-├── rpc/client.ts         # Connection web3.js + limiteur de concurrence + retries exponentiels
+├── rpc/client.ts         # Connection web3.js + ordonnanceur (priorités, concurrence, débit) + retries
 ├── analyzers/
-│   ├── token.ts          # Mint, autorités, extensions Token-2022, métadonnées Metaplex / Token-2022
+│   ├── token.ts          # Mint, autorités, extensions Token-2022, métadonnées, comptes de marché (1 requête)
 │   ├── holders.ts        # Top 20, agrégation par propriétaire, classification
 │   ├── clustering.ts     # Variance / écart-type / CV / Gini + détection de groupes
+│   ├── fresh.ts          # Wallets frais parmi les gros holders (lancements « bundlés »)
 │   ├── dusting.ts        # Recensement des holders et ratio de poussière
 │   ├── pumpfun.ts        # Décodage de la bonding curve Pump.fun, prix, progression
 │   ├── reserve.ts        # Réserve réelle : bonding curve, PumpSwap, Raydium AMM v4 / CPMM, repli générique

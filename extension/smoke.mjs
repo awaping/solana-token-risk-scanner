@@ -25,7 +25,7 @@ function fakeChrome(calls) {
       onStartup: listener(),
       onInstalled: listener(),
       id: 'smoke-test',
-      getManifest: () => ({ version: '1.4.1' }),
+      getManifest: () => ({ version: '1.5.0' }),
       getURL: (path) => `chrome-extension://smoke-test/${path}`,
       sendMessage: async () => ({ ok: true }),
       sendNativeMessage: async () => {
@@ -101,7 +101,7 @@ const results = await Promise.all([
   smoke('content (page)', join(ROOT, 'src/content.ts'), {
     chrome: fakeChrome(calls),
     location: { href: 'https://pump.fun/coin/BoDxYCeLDSUyCfrMabcdefghijklmnopqrstupump' },
-    document: { documentElement: { append() {} }, getElementById: () => null, createElement: () => ({ append() {}, addEventListener() {}, classList: {}, style: {} }) },
+    document: { documentElement: { append() {} }, getElementById: () => null, addEventListener() {}, createElement: () => ({ append() {}, addEventListener() {}, classList: {}, style: {} }) },
     history: { pushState() {}, replaceState() {} },
     addEventListener() {},
   }),

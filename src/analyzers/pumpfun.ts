@@ -13,7 +13,7 @@
  */
 import { sha256 } from '@noble/hashes/sha256';
 import { PublicKey } from '@solana/web3.js';
-import { PUMP_FUN, PUMP_FUN_PROGRAM_ID } from '../constants.js';
+import { PUMP_FUN, PUMP_FUN_PROGRAM_ID, PUMPSWAP_PROGRAM_ID, WSOL_MINT } from '../constants.js';
 import type { BondingCurveState } from '../types.js';
 import { bn, BigNumber } from '../utils/math.js';
 
@@ -34,6 +34,24 @@ export function rentExemptMinimum(dataLength: number): bigint {
 
 export function bondingCurvePda(mint: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([Buffer.from('bonding-curve'), mint.toBuffer()], PUMP_FUN_PROGRAM_ID)[0];
+}
+
+/** Autorité de migration Pump.fun d'un mint : PDA ["pool-authority", mint] du programme Pump.fun. */
+export function pumpPoolAuthorityPda(mint: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([Buffer.from('pool-authority'), mint.toBuffer()], PUMP_FUN_PROGRAM_ID)[0];
+}
+
+/**
+ * Pool PumpSwap canonique d'un token Pump.fun migré : PDA ["pool", index 0
+ * (u16 LE), pool-authority, mint, WSOL] du programme PumpSwap. Elle se lit
+ * directement, sans recherche par getProgramAccounts (lente et coûteuse).
+ */
+export function canonicalPumpSwapPool(mint: PublicKey): PublicKey {
+  const index = Buffer.alloc(2); // index 0
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('pool'), index, pumpPoolAuthorityPda(mint).toBuffer(), mint.toBuffer(), WSOL_MINT.toBuffer()],
+    PUMPSWAP_PROGRAM_ID,
+  )[0];
 }
 
 /** Décode un compte BondingCurve ; renvoie null si le format ne correspond pas. */

@@ -40,6 +40,9 @@ export interface ScanMetrics {
   largestClusterSize?: number;
   /** Transactions sur le mint depuis sa création (activité passée). */
   mintTxCount?: number;
+  /** Part de la supply détenue par des wallets frais (moins de 24 h), et leur nombre. */
+  freshPct?: number;
+  freshCount?: number;
 }
 
 /** Origine d'une analyse : ouverture de la page, bouton ↻, achat paper, ou suivi automatique après l'achat. */

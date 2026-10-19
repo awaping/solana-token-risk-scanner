@@ -162,6 +162,7 @@ export const ENTRY_METRICS: EntryMetric[] = [
   { key: 'creatorTokens', label: 'Tokens déjà créés par le dev', digits: 0, get: (e) => e.metrics.creatorPreviousTokens },
   { key: 'creatorSol', label: 'Solde du dev (SOL)', digits: 2, get: (e) => e.metrics.creatorSolBalance },
   { key: 'cluster', label: 'Plus gros cluster (wallets)', digits: 0, get: (e) => e.metrics.largestClusterSize },
+  { key: 'fresh', label: 'Wallets frais (% de la supply)', digits: 1, get: (e) => e.metrics.freshPct },
   { key: 'coverage', label: 'Couverture de l’analyse (%)', digits: 0, get: (e) => e.coverage * 100 },
 ];
 

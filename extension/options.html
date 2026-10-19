@@ -6,6 +6,7 @@
   h1 { font-size: 14px; margin: 0 0 4px; }
   p.sub { color: #8b9199; font-size: 11px; margin: 0 0 14px; }
   label { display: block; margin: 12px 0 4px; font-weight: 600; }
+  select { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid #2a2e35; background: #0e1013; color: #e8eaed; font: inherit; font-size: 12px; }
   input[type=text] { width: 100%; box-sizing: border-box; padding: 7px 8px; border-radius: 6px; border: 1px solid #2a2e35; background: #0e1013; color: #e8eaed; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
   .check { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0; }
   .hint { color: #8b9199; font-size: 11px; margin: 3px 0 0; }
@@ -28,8 +29,19 @@
 <input id="rpc" type="text" spellcheck="false" placeholder="https://mainnet.helius-rpc.com/?api-key=…" />
 <p class="hint">L'endpoint public est limité en débit : une clé Helius/Triton rend l'analyse bien plus fiable. La clé reste dans ce navigateur.</p>
 
+<label for="plan">Offre de ton RPC (vitesse des analyses)</label>
+<select id="plan">
+  <option value="9">Helius gratuit · 10 requêtes/s</option>
+  <option value="45">Helius Developer · 50 requêtes/s</option>
+  <option value="180">Helius Business · 200 requêtes/s</option>
+  <option value="450">Helius Professional · 500 requêtes/s</option>
+  <option value="20">Autre fournisseur · 20 requêtes/s</option>
+</select>
+<p class="hint">Le débit limite surtout la note définitive (historique du dev : ~30 requêtes). La note provisoire s'affiche en moins d'une seconde quelle que soit l'offre. Choisir plus que ton offre ne le permet provoque des refus (429).</p>
+
 <div class="check"><input id="census" type="checkbox" /><label for="census" style="margin:0;font-weight:400">Recensement complet des holders<p class="hint">Indispensable au dusting check (faux holders). Une requête de plus par analyse ; refusée par certains RPC publics, acceptée par les RPC privés (Helius…).</p></label></div>
 <div class="check"><input id="auto" type="checkbox" /><label for="auto" style="margin:0;font-weight:400">Analyse automatique à l'ouverture d'un token</label></div>
+<div class="check"><input id="prefetch" type="checkbox" /><label for="prefetch" style="margin:0;font-weight:400">Pré-analyser au survol d'un lien de token<p class="hint">L'analyse démarre quand la souris s'attarde sur un token (liste pump.fun, GMGN, Axiom…) : à l'ouverture de sa page, la note est déjà prête ou presque. Consomme un peu de débit RPC pour les tokens survolés sans être ouverts.</p></label></div>
 <div class="check"><input id="paper" type="checkbox" /><label for="paper" style="margin:0;font-weight:400">Suivre mes positions de paper trading DryFlip<p class="hint">Lit la position affichée par DryFlip sur la page (IN, PnL, solde). À chaque achat : analyse complète du token à cet instant, puis ré-analyses à 5 min, 15 min, 1 h, 4 h et 24 h pour savoir s'il a run ou rug. Tout reste dans ce navigateur.</p></label></div>
 
 <button id="save">Enregistrer</button><span id="saved" hidden>enregistré</span>

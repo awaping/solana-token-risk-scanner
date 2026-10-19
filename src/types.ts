@@ -123,6 +123,36 @@ export interface ClusteringAnalysis {
 }
 
 // ---------------------------------------------------------------------------
+// Wallets frais
+// ---------------------------------------------------------------------------
+
+export interface FreshWallet {
+  owner: string;
+  /** Part de la supply détenue (%). */
+  pct: number;
+  /** Âge du wallet (première transaction), en heures. */
+  ageHours: number;
+  /** Transactions depuis sa création. */
+  transactions: number;
+}
+
+/**
+ * Wallets « frais » parmi les plus gros holders : première transaction récente
+ * et historique très court. Signature d'un lancement « bundlé » (wallets créés
+ * et financés juste avant le lancement pour acheter, puis revendre).
+ */
+export interface FreshWalletsAnalysis {
+  /** Wallets examinés (plus gros holders hors protocole et créateur). */
+  checked: number;
+  fresh: FreshWallet[];
+  /** Part de la supply détenue par les wallets frais (%). */
+  freshPct: number;
+  /** Définition utilisée : âge maximal (h) et nombre maximal de transactions. */
+  maxAgeHours: number;
+  maxTransactions: number;
+}
+
+// ---------------------------------------------------------------------------
 // Dusting
 // ---------------------------------------------------------------------------
 
@@ -277,8 +307,17 @@ export interface ScanResult {
   tokenAge?: TokenAge;
   holders: ModuleOutcome<HoldersAnalysis>;
   clustering: ModuleOutcome<ClusteringAnalysis>;
+  /** Wallets frais parmi les gros holders (compté dans le module clustering). */
+  fresh?: ModuleOutcome<FreshWalletsAnalysis>;
   dusting: ModuleOutcome<DustingAnalysis>;
   reserve: ModuleOutcome<ReserveAnalysis>;
   creator: ModuleOutcome<CreatorAnalysis>;
   risk: RiskScore;
+  /**
+   * Résultat provisoire : ces analyses sont encore en cours (historique du dev,
+   * wallets frais). La note définitive suit.
+   */
+  pending?: Array<'creator' | 'fresh'>;
+  /** Note provisoire : créateur déjà identifié (bonding curve) avant son analyse. */
+  earlyCreator?: string;
 }

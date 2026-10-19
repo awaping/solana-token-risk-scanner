@@ -17,6 +17,7 @@ import {
   type PartiallyDecodedInstruction,
 } from '@solana/web3.js';
 import { unpackAccount } from '@solana/spl-token';
+import type { ScanCache } from '../cache.js';
 import type { ScannerConfig } from '../config.js';
 import type { RpcClient } from '../rpc/client.js';
 import type { CreatorAnalysis, ReserveAnalysis, TokenInfo } from '../types.js';
@@ -140,28 +141,40 @@ export interface CreatorHistory {
  * mints qu'il a initialisés (InitializeMint / InitializeMint2 signés par lui).
  * Partagé par le scan complet et l'enrichissement asynchrone du mode stream.
  */
-export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, scanLimit: number): Promise<CreatorHistory> {
-  const [lamports, signatures] = await Promise.all([
+/** Transactions d'un créateur déjà lues : mints qu'il y a initialisés (vide si aucun). */
+type KnownTransactions = Record<string, string[]>;
+const CREATOR_CACHE_MS = 30 * 60_000;
+
+export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, scanLimit: number, cache?: ScanCache): Promise<CreatorHistory> {
+  const cacheKey = `creator-tx:${creator.toBase58()}`;
+  const [lamports, signatures, known = {}] = await Promise.all([
     rpc.call((c) => c.getBalance(creator)),
     // Au moins 1 signature pour estimer l'activité même si le scan est désactivé.
     fetchSignatures(rpc, creator, Math.max(scanLimit, 1)),
+    cache?.get<KnownTransactions>(cacheKey),
   ]);
 
   const created = new Set<string>();
   const toScan = scanLimit > 0 ? signatures.filter((s) => s.err === null).slice(0, scanLimit) : [];
-  let txScanned = 0;
+  const seen: KnownTransactions = {};
+  // Transactions déjà lues lors d'une analyse précédente (même dev, ↻, suivi) : pas relues.
   await Promise.all(
     toScan.map(async ({ signature }) => {
-      const tx = await rpc
-        .call((c) => c.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 }))
-        .catch(() => null);
-      if (!tx) return;
-      txScanned++;
-      const signedByCreator = tx.transaction.message.accountKeys.some((k) => k.signer && k.pubkey.equals(creator));
-      if (!signedByCreator) return;
-      for (const m of extractInitializedMints(tx)) created.add(m);
+      let mints = known[signature];
+      if (!mints) {
+        const tx = await rpc
+          .call((c) => c.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 }))
+          .catch(() => null);
+        if (!tx) return;
+        const signedByCreator = tx.transaction.message.accountKeys.some((k) => k.signer && k.pubkey.equals(creator));
+        mints = signedByCreator ? extractInitializedMints(tx) : [];
+      }
+      seen[signature] = mints;
+      for (const m of mints) created.add(m);
     }),
   );
+  const txScanned = Object.keys(seen).length;
+  if (cache && txScanned > 0) await cache.set(cacheKey, seen, CREATOR_CACHE_MS);
 
   const fullHistory = signatures.length < Math.max(scanLimit, 1);
   const oldest = signatures[signatures.length - 1];
@@ -178,28 +191,36 @@ export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, sca
   };
 }
 
+/**
+ * `holding` : tokens détenus par le créateur, quand on les connaît déjà (par le
+ * recensement des holders) ; sinon une requête de plus.
+ */
 export async function analyzeCreator(
   rpc: RpcClient,
   config: ScannerConfig,
   token: TokenInfo,
   identity: CreatorIdentity,
+  options: { holding?: Promise<bigint | null>; cache?: ScanCache } = {},
 ): Promise<CreatorAnalysis> {
   const creator = new PublicKey(identity.address);
   const mint = new PublicKey(token.mint);
 
-  const [history, tokenAccounts] = await Promise.all([
-    scanCreatorHistory(rpc, creator, config.creatorTxScanLimit),
-    rpc.call((c) => c.getTokenAccountsByOwner(creator, { mint })),
-  ]);
-
-  let held = 0n;
-  for (const { pubkey, account } of tokenAccounts.value) {
-    try {
-      held += unpackAccount(pubkey, account, account.owner).amount;
-    } catch {
-      // compte illisible ignoré
+  const heldFromAccounts = async () => {
+    const tokenAccounts = await rpc.call((c) => c.getTokenAccountsByOwner(creator, { mint }));
+    let total = 0n;
+    for (const { pubkey, account } of tokenAccounts.value) {
+      try {
+        total += unpackAccount(pubkey, account, account.owner).amount;
+      } catch {
+        // compte illisible ignoré
+      }
     }
-  }
+    return total;
+  };
+  const [history, held] = await Promise.all([
+    scanCreatorHistory(rpc, creator, config.creatorTxScanLimit, options.cache),
+    (options.holding ?? Promise.resolve(null)).then((known) => known ?? heldFromAccounts()),
+  ]);
 
   return {
     address: identity.address,

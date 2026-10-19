@@ -490,7 +490,7 @@ function tile(label: string, value: Node | string, note: string): HTMLElement {
 }
 
 function scansTable(scans: ScanPoint[]): HTMLElement {
-  const headers = ['Date', 'Origine', 'Âge du token', 'Note', 'Évol.', 'Couverture', 'Top 10', 'Plus gros', 'Baleines', 'Holders', 'Réserve (SOL)', 'MCap (SOL)', 'Courbe', 'Créateur', 'Alertes'];
+  const headers = ['Date', 'Origine', 'Âge du token', 'Note', 'Évol.', 'Couverture', 'Top 10', 'Plus gros', 'Baleines', 'Wallets frais', 'Holders', 'Réserve (SOL)', 'MCap (SOL)', 'Courbe', 'Créateur', 'Alertes'];
   const rows = [...scans].reverse().map((p, i, all) => {
     const before = all[i + 1];
     const m = p.metrics;
@@ -509,6 +509,7 @@ function scansTable(scans: ScanPoint[]): HTMLElement {
       h('td', { class: 'num' }, pct(m.top10Pct)),
       h('td', { class: 'num' }, pct(m.maxWalletPct)),
       h('td', { class: 'num' }, m.whales === undefined ? '–' : String(m.whales)),
+      h('td', { class: 'num' }, m.freshPct === undefined ? '–' : `${pct(m.freshPct)}${m.freshCount ? ` (${m.freshCount})` : ''}`),
       h('td', { class: 'num' }, m.holders === undefined ? '–' : nf(m.holders, 0)),
       h('td', { class: 'num' }, nf(m.reserveSol, 2)),
       h('td', { class: 'num' }, nf(m.marketCapSol, 1)),

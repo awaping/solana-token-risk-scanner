@@ -131,3 +131,17 @@ test('RpcClient : un 429 est rejoué après une pause', async () => {
   assert.equal(attempts, 2);
   assert.ok(Date.now() - started >= 950, 'pause d’au moins 1 s après un 429');
 });
+
+test('RpcClient : sous le plafond de débit, les requêtes prioritaires partent d’abord', async () => {
+  const client = new RpcClient({ url: 'http://127.0.0.1:1', concurrency: 1, maxRetries: 0, maxRps: 50 });
+  const low = client.scoped(new AbortController().signal, 'low');
+  const high = client.scoped(new AbortController().signal, 'high');
+  const order: string[] = [];
+  const pending = [
+    ...[1, 2, 3].map((i) => low.call(async () => void order.push(`bas${i}`))),
+    ...[1, 2].map((i) => high.call(async () => void order.push(`haut${i}`))),
+  ];
+  await Promise.all(pending);
+  // La première requête basse était déjà partie ; ensuite les hautes passent devant.
+  assert.deepEqual(order, ['bas1', 'haut1', 'haut2', 'bas2', 'bas3']);
+});

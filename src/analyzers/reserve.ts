@@ -21,6 +21,7 @@ import {
 } from '../constants.js';
 import type { RpcClient } from '../rpc/client.js';
 import type { HoldersAnalysis, PoolReserve, ReserveAnalysis, TokenInfo } from '../types.js';
+import type { MarketAccounts } from './token.js';
 import { bn, lamportsToSol, toUiAmount } from '../utils/math.js';
 import {
   anchorAccountDiscriminator,
@@ -196,18 +197,40 @@ export function poolPriceSol(pool: PoolReserve, tokenDecimals: number): number {
   return bn(pool.solReserveLamports).shiftedBy(-9).div(tokens).toNumber();
 }
 
+/** Pool PumpSwap canonique lue avec le mint : candidate directe si son compte correspond bien au token. */
+function canonicalPoolCandidate(markets: MarketAccounts | undefined, mint: PublicKey): PoolCandidate | null {
+  const info = markets?.pumpSwapPool.info;
+  const layout = POOL_LAYOUTS[0]!;
+  if (!info || !info.owner.equals(PUMPSWAP_PROGRAM_ID) || info.data.length < layout.vaultBOffset + 32) return null;
+  if (!info.data.subarray(0, 8).equals(layout.discriminator!)) return null;
+  if (!readKey(info.data, layout.mintAOffset).equals(mint) || !readKey(info.data, layout.mintBOffset).equals(WSOL_MINT)) return null;
+  return {
+    venue: layout.venue,
+    address: markets!.pumpSwapPool.address.toBase58(),
+    tokenVault: readKey(info.data, layout.vaultAOffset),
+    solVault: readKey(info.data, layout.vaultBOffset),
+  };
+}
+
+/**
+ * `markets` : bonding curve et pool PumpSwap canonique déjà lues avec le mint.
+ * Pour un token Pump.fun, la réserve est alors connue sans requête (curve
+ * active) ou en une seule (soldes de la pool), au lieu de six recherches
+ * getProgramAccounts.
+ */
 export async function analyzeReserve(
   rpc: RpcClient,
   token: TokenInfo,
   getHolders: () => Promise<HoldersAnalysis | null>,
+  markets?: MarketAccounts,
 ): Promise<ReserveAnalysis> {
   const mint = new PublicKey(token.mint);
   const supplyUi = toUiAmount(token.supply, token.decimals);
   const searchErrors: string[] = [];
 
   // 1. Bonding curve Pump.fun
-  const curveAddress = bondingCurvePda(mint);
-  const curveInfo = await rpc.call((c) => c.getAccountInfo(curveAddress));
+  const curveAddress = markets?.bondingCurve.address ?? bondingCurvePda(mint);
+  const curveInfo = markets ? markets.bondingCurve.info : await rpc.call((c) => c.getAccountInfo(curveAddress));
   const curve =
     curveInfo && curveInfo.owner.equals(PUMP_FUN_PROGRAM_ID)
       ? decodeBondingCurve(curveAddress, curveInfo.data, BigInt(curveInfo.lamports))
@@ -237,18 +260,24 @@ export async function analyzeReserve(
     };
   }
 
-  // 2. Pools AMM connues
-  const candidateLists = await Promise.all(
-    POOL_LAYOUTS.map((layout) =>
-      findPoolsForLayout(rpc, layout, mint).catch((error: unknown) => {
-        searchErrors.push(`${layout.venue} : ${error instanceof Error ? error.message : String(error)}`);
-        return [] as PoolCandidate[];
-      }),
-    ),
-  );
-  let pools = await loadPoolReserves(rpc, candidateLists.flat());
+  // 2. Pool PumpSwap canonique d'un token Pump.fun migré : lecture directe.
+  const canonical = canonicalPoolCandidate(markets, mint);
+  let pools = canonical ? await loadPoolReserves(rpc, [canonical]) : [];
 
-  // 3. Repli générique via les plus gros holders
+  // 3. Sinon, pools AMM connues (recherche par getProgramAccounts)
+  if (pools.length === 0) {
+    const candidateLists = await Promise.all(
+      POOL_LAYOUTS.map((layout) =>
+        findPoolsForLayout(rpc, layout, mint).catch((error: unknown) => {
+          searchErrors.push(`${layout.venue} : ${error instanceof Error ? error.message : String(error)}`);
+          return [] as PoolCandidate[];
+        }),
+      ),
+    );
+    pools = await loadPoolReserves(rpc, candidateLists.flat());
+  }
+
+  // 4. Repli générique via les plus gros holders
   if (pools.length === 0) {
     const holders = await getHolders();
     if (holders) {

@@ -8,11 +8,11 @@ import {
   AccountState,
   ExtensionType,
   getDefaultAccountState,
+  getExtensionData,
   getExtensionTypes,
   getMintCloseAuthority,
   getPausableConfig,
   getPermanentDelegate,
-  getTokenMetadata,
   getTransferFeeConfig,
   getTransferHook,
   unpackMint,
@@ -21,6 +21,7 @@ import {
 import { METAPLEX_METADATA_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '../constants.js';
 import type { RpcClient } from '../rpc/client.js';
 import type { Severity, TokenInfo } from '../types.js';
+import { bondingCurvePda, canonicalPumpSwapPool } from './pumpfun.js';
 
 export interface MetaplexMetadata {
   updateAuthority: string;
@@ -100,6 +101,29 @@ export function decodeMetaplexMetadata(data: Buffer): MetaplexMetadata | null {
 }
 
 const isSet = (key: PublicKey | null | undefined): key is PublicKey => !!key && !key.equals(PublicKey.default);
+
+/**
+ * Décode l'extension TokenMetadata d'un mint Token-2022 (Borsh) :
+ * update_authority (32, nulle = aucune), mint (32), name, symbol, uri (u32 + UTF-8).
+ * Lue dans le compte du mint déjà chargé : pas de seconde requête.
+ */
+export function decodeTokenMetadataExtension(data: Buffer): { updateAuthority: string | null; name: string; symbol: string; uri: string } | null {
+  try {
+    let offset = 64;
+    const readString = () => {
+      const len = data.readUInt32LE(offset);
+      offset += 4;
+      if (offset + len > data.length) throw new RangeError('métadonnées tronquées');
+      const value = data.subarray(offset, offset + len).toString('utf8');
+      offset += len;
+      return value.replace(/\0/g, '').trim();
+    };
+    const authority = new PublicKey(data.subarray(0, 32));
+    return { updateAuthority: isSet(authority) ? authority.toBase58() : null, name: readString(), symbol: readString(), uri: readString() };
+  } catch {
+    return null;
+  }
+}
 
 /** Recense les extensions Token-2022 et signale celles qui donnent du pouvoir à un tiers. */
 function inspectExtensions(mint: Mint): Pick<TokenInfo, 'extensions' | 'dangerousExtensions' | 'transferFeeBps'> {
@@ -196,12 +220,36 @@ export class NotAMintError extends Error {
 }
 
 /**
- * Charge et décode le mint. Lève une erreur explicite si l'adresse n'est pas
- * un mint SPL Token / Token-2022 (NotAMintError si le compte existe).
+ * Comptes de marché Pump.fun lus dans la même requête que le mint : la bonding
+ * curve et la pool PumpSwap canonique (adresses dérivées du mint). La réserve et
+ * le créateur sont ainsi connus dès le premier aller-retour.
  */
+export interface MarketAccounts {
+  bondingCurve: { address: PublicKey; info: AccountInfo<Buffer> | null };
+  pumpSwapPool: { address: PublicKey; info: AccountInfo<Buffer> | null };
+}
+
+/** Charge et décode le mint (voir loadToken). */
 export async function analyzeToken(rpc: RpcClient, mint: PublicKey): Promise<TokenInfo> {
+  return (await loadToken(rpc, mint)).token;
+}
+
+/**
+ * Charge et décode le mint, avec ses métadonnées et ses comptes de marché
+ * Pump.fun, en une seule requête. Lève une erreur explicite si l'adresse n'est
+ * pas un mint SPL Token / Token-2022 (NotAMintError si le compte existe).
+ */
+export async function loadToken(rpc: RpcClient, mint: PublicKey): Promise<{ token: TokenInfo; markets: MarketAccounts }> {
   const metadataPda = metaplexMetadataPda(mint);
-  const [mintInfo, metadataInfo] = await rpc.call((c) => c.getMultipleAccountsInfo([mint, metadataPda]));
+  const curveAddress = bondingCurvePda(mint);
+  const poolAddress = canonicalPumpSwapPool(mint);
+  const [mintInfo, metadataInfo, curveInfo, poolInfo] = await rpc.call((c) =>
+    c.getMultipleAccountsInfo([mint, metadataPda, curveAddress, poolAddress]),
+  );
+  const markets: MarketAccounts = {
+    bondingCurve: { address: curveAddress, info: curveInfo ?? null },
+    pumpSwapPool: { address: poolAddress, info: poolInfo ?? null },
+  };
 
   if (!mintInfo) throw new Error(`Aucun compte trouvé à l'adresse ${mint.toBase58()} (mauvais réseau ou adresse erronée ?)`);
 
@@ -232,19 +280,15 @@ export async function analyzeToken(rpc: RpcClient, mint: PublicKey): Promise<Tok
 
   if (isToken2022) {
     Object.assign(token, inspectExtensions(mintData));
-    if (token.extensions.includes('TokenMetadata')) {
-      try {
-        const meta = await rpc.call((c) => getTokenMetadata(c, mint, 'confirmed', programId));
-        if (meta) {
-          token.name = meta.name;
-          token.symbol = meta.symbol;
-          if (meta.uri.trim()) token.metadataUri = meta.uri.trim();
-          token.metadataUpdateAuthority = isSet(meta.updateAuthority) ? meta.updateAuthority.toBase58() : null;
-          token.metadataMutable = token.metadataUpdateAuthority !== null;
-        }
-      } catch {
-        // Métadonnées facultatives : on ignore les erreurs de décodage.
-      }
+    // Métadonnées dans le mint lui-même (tokens Pump.fun récents) : décodées sur place.
+    const extension = token.extensions.includes('TokenMetadata') ? getExtensionData(ExtensionType.TokenMetadata, mintData.tlvData) : null;
+    const meta = extension ? decodeTokenMetadataExtension(extension) : null;
+    if (meta) {
+      token.name = meta.name;
+      token.symbol = meta.symbol;
+      if (meta.uri) token.metadataUri = meta.uri;
+      token.metadataUpdateAuthority = meta.updateAuthority;
+      token.metadataMutable = meta.updateAuthority !== null;
     }
   }
 
@@ -259,5 +303,5 @@ export async function analyzeToken(rpc: RpcClient, mint: PublicKey): Promise<Tok
     }
   }
 
-  return token;
+  return { token, markets };
 }

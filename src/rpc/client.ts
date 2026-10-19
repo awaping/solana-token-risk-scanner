@@ -80,28 +80,96 @@ export function createLimiter(concurrency: number) {
   };
 }
 
-/** État partagé entre un client et ses vues `scoped()` : connexion, limiteur, cadence. */
-interface SharedState {
-  connection: Connection;
-  limit: ReturnType<typeof createLimiter>;
-  /** Prochain créneau d'envoi autorisé (ms), pour le plafond de requêtes par seconde. */
-  gate: { nextSlot: number };
+/** Priorité d'une requête : l'analyse de la page ouverte passe avant les pré-analyses et les suivis. */
+export type RpcPriority = 'high' | 'normal' | 'low';
+/** Rang de départ de chaque priorité (plus petit = plus tôt) ; une analyse range ses requêtes secondaires juste après. */
+const RANK: Record<RpcPriority, number> = { high: 0, normal: 10, low: 20 };
+
+interface Waiter {
+  rank: number;
+  seq: number;
+  start: (release: () => void) => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Ordonnanceur partagé par un client et ses vues : nombre maximal de requêtes
+ * en vol, plafond de requêtes par seconde, et file par priorité. Sous un
+ * plafond de débit (offres gratuites), c'est l'ordre de départ qui décide de
+ * ce qui arrive en premier : la page ouverte d'abord.
+ */
+export class RpcScheduler {
+  private readonly queue: Waiter[] = [];
+  private seq = 0;
+  private active = 0;
+  private nextSlot = 0;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly concurrency: number,
+    private readonly minIntervalMs: number,
+  ) {}
+
+  /** Attend une place et un créneau de débit ; renvoie la fonction qui libère la place. */
+  acquire(rank: number, signal?: AbortSignal): Promise<() => void> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ rank, seq: this.seq++, start: resolve, reject, ...(signal ? { signal } : {}) });
+      this.pump();
+    });
+  }
+
+  /** Prochaine requête à partir : rang le plus petit, puis la plus ancienne. */
+  private nextIndex(): number {
+    let best = -1;
+    this.queue.forEach((w, i) => {
+      const b = this.queue[best];
+      if (!b || w.rank < b.rank || (w.rank === b.rank && w.seq < b.seq)) best = i;
+    });
+    return best;
+  }
+
+  private pump(): void {
+    if (this.timer) return;
+    while (this.active < this.concurrency) {
+      const index = this.nextIndex();
+      if (index < 0) return;
+      // Analyse annulée pendant l'attente : retirée sans consommer de créneau.
+      if (this.queue[index]!.signal?.aborted) {
+        this.queue.splice(index, 1)[0]!.reject(new RpcAbortedError());
+        continue;
+      }
+      const now = Date.now();
+      if (this.minIntervalMs && this.nextSlot > now) {
+        this.timer = setTimeout(() => {
+          this.timer = null;
+          this.pump();
+        }, this.nextSlot - now);
+        return;
+      }
+      this.nextSlot = Math.max(now, this.nextSlot) + this.minIntervalMs;
+      this.active++;
+      let released = false;
+      this.queue.splice(index, 1)[0]!.start(() => {
+        if (released) return;
+        released = true;
+        this.active--;
+        this.pump();
+      });
+    }
+  }
 }
 
 export class RpcClient {
   readonly connection: Connection;
   readonly url: string;
-  private readonly limit: ReturnType<typeof createLimiter>;
-  private readonly gate: { nextSlot: number };
+  private readonly scheduler: RpcScheduler;
   private readonly maxRetries: number;
-  private readonly minIntervalMs: number;
   private signal?: AbortSignal;
-  /** Nombre total d'appels RPC effectués (retries inclus). */
-  requestCount = 0;
-
+  private rank = RANK.normal;
   constructor(
     private readonly options: RpcClientOptions,
-    shared?: SharedState,
+    shared?: { connection: Connection; scheduler: RpcScheduler },
   ) {
     this.url = options.url;
     this.connection =
@@ -112,56 +180,72 @@ export class RpcClient {
         disableRetryOnRateLimit: true,
         confirmTransactionInitialTimeout: 60_000,
       });
-    this.limit = shared?.limit ?? createLimiter(Math.max(1, options.concurrency));
-    this.gate = shared?.gate ?? { nextSlot: 0 };
+    this.scheduler =
+      shared?.scheduler ??
+      new RpcScheduler(Math.max(1, options.concurrency), options.maxRps && options.maxRps > 0 ? 1000 / options.maxRps : 0);
     this.maxRetries = Math.max(0, options.maxRetries);
-    this.minIntervalMs = options.maxRps && options.maxRps > 0 ? 1000 / options.maxRps : 0;
   }
 
   /**
-   * Vue du même client (même limiteur, même plafond de débit) dont les requêtes
-   * non encore parties sont abandonnées quand `signal` est annulé : passer d'un
-   * token à l'autre ne laisse pas l'ancienne analyse consommer le quota du RPC.
+   * Vue du même client (même ordonnanceur : même plafond de débit) dont les
+   * requêtes non encore parties sont abandonnées quand `signal` est annulé :
+   * passer d'un token à l'autre ne laisse pas l'ancienne analyse consommer le
+   * quota du RPC. `priority` : priorité par défaut des requêtes de la vue.
    */
-  scoped(signal: AbortSignal): RpcClient {
-    const view = new RpcClient(this.options, { connection: this.connection, limit: this.limit, gate: this.gate });
+  scoped(signal: AbortSignal, priority: RpcPriority = 'normal'): RpcClient {
+    const view = new RpcClient(this.options, { connection: this.connection, scheduler: this.scheduler });
     view.signal = signal;
+    view.rank = RANK[priority];
     return view;
   }
 
-  /** Attend le prochain créneau d'envoi (plafond de requêtes par seconde). */
-  private async throttle(): Promise<void> {
-    if (!this.minIntervalMs) return;
-    const now = Date.now();
-    const slot = Math.max(now, this.gate.nextSlot);
-    this.gate.nextSlot = slot + this.minIntervalMs;
-    if (slot > now) await sleep(slot - now);
+  /**
+   * Vue pour les requêtes secondaires d'une analyse (historique du dev, wallets
+   * frais, âge) : elles partent après ses requêtes principales, mais avant celles
+   * d'une analyse moins prioritaire. Même annulation, même compteur.
+   */
+  secondary(): RpcClient {
+    const view = new RpcClient(this.options, { connection: this.connection, scheduler: this.scheduler });
+    view.signal = this.signal;
+    view.rank = this.rank + 1;
+    view.counter = this.counter;
+    return view;
+  }
+
+  /** Compteur partagé entre une vue et ses vues secondaires. */
+  private counter = { requests: 0 };
+
+  /** Nombre total d'appels RPC effectués par cette vue et ses vues secondaires (retries inclus). */
+  get requestCount(): number {
+    return this.counter.requests;
   }
 
   /**
-   * Exécute une requête RPC sous le limiteur de concurrence, avec retries
-   * exponentiels (500 ms, 1 s, 2 s, 4 s... + jitter) sur erreurs transitoires.
+   * Exécute une requête RPC dans l'ordonnanceur (priorité, concurrence, débit),
+   * avec retries exponentiels (500 ms, 1 s, 2 s… + jitter) sur erreurs
+   * transitoires ; la place est rendue pendant l'attente d'un retry.
    */
-  call<T>(request: (connection: Connection) => Promise<T>): Promise<T> {
-    return this.limit(async () => {
-      let attempt = 0;
-      for (;;) {
-        if (this.signal?.aborted) throw new RpcAbortedError();
-        await this.throttle();
-        if (this.signal?.aborted) throw new RpcAbortedError();
-        this.requestCount++;
-        try {
-          return await request(this.connection);
-        } catch (error) {
-          if (attempt >= this.maxRetries || !isTransientError(error)) throw error;
-          // Limite de débit (429) : on laisse au fournisseur le temps de se remettre (1 s, 2 s, 4 s…).
-          const message = error instanceof Error ? error.message : String(error);
-          const base = RATE_LIMITED.test(message) ? 1_000 : 500;
-          const delay = base * 2 ** attempt + Math.floor(Math.random() * 250);
-          attempt++;
-          await sleep(delay);
-        }
+  async call<T>(request: (connection: Connection) => Promise<T>): Promise<T> {
+    let attempt = 0;
+    for (;;) {
+      if (this.signal?.aborted) throw new RpcAbortedError();
+      const release = await this.scheduler.acquire(this.rank, this.signal);
+      this.counter.requests++;
+      try {
+        return await request(this.connection);
+      } catch (error) {
+        if (attempt >= this.maxRetries || !isTransientError(error)) throw error;
+        // Limite de débit (429) : on laisse au fournisseur le temps de se remettre (1 s, 2 s, 4 s…).
+        const message = error instanceof Error ? error.message : String(error);
+        const base = RATE_LIMITED.test(message) ? 1_000 : 500;
+        const delay = base * 2 ** attempt + Math.floor(Math.random() * 250);
+        attempt++;
+        release();
+        await sleep(delay);
+        continue;
+      } finally {
+        release();
       }
-    });
+    }
   }
 }

@@ -43,6 +43,10 @@ interface ScanLike {
   history?: { count: number; first: { at: number; score: number }; previous?: { at: number; score: number }; deadAtOpen?: string };
   /** Création du token (ms). */
   tokenAge?: { createdAt: number; exact: boolean };
+  /** Wallets frais parmi les gros holders. */
+  fresh?: { pct: number; count: number; checked: number };
+  /** Note provisoire : analyses encore en cours. */
+  pending?: Array<'creator' | 'fresh'>;
 }
 
 interface TradeLite {
@@ -64,10 +68,14 @@ interface PaperReply {
 type ScanResponse = { ok: true; result: ScanLike } | { ok: false; error: string; action?: 'options' | 'retry' };
 
 const PANEL_ID = 'solana-risk-scanner-panel';
+/** Survol d'un lien de token pendant ce temps : son analyse démarre avant le clic. */
+const HOVER_MS = 250;
 let host: HTMLElement | null = null;
 let shadow: ShadowRoot | null = null;
 let currentMint: string | null = null;
 let dismissed = new Set<string>();
+/** Token dont la note définitive est affichée : une note provisoire tardive ne l'écrase pas. */
+let finalShown: string | null = null;
 /** Extension rechargée ou mise à jour pendant que la page restait ouverte : ce script est orphelin. */
 let orphaned = false;
 
@@ -134,6 +142,7 @@ const STYLE = `
 .paper { margin: 8px 0 2px; padding: 7px 8px; border-radius: 6px; background: #101b2d; border: 1px solid #1e3a5f; font-size: 12px; line-height: 1.5; color: #c3c7ce; font-variant-numeric: tabular-nums; }
 .paper .t { color: #93c5fd; font-weight: 600; }
 .gain { color: #34d399; font-weight: 600; } .loss { color: #f87171; font-weight: 600; }
+.prov { margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: #10213a; color: #93c5fd; font-size: 11px; line-height: 1.45; }
 .diag { width: 100%; box-sizing: border-box; height: 90px; margin-top: 6px; background: #0e1013; color: #c3c7ce; border: 1px solid #2a2e35; border-radius: 6px; font: 10px ui-monospace, Menlo, monospace; }
 `;
 
@@ -337,11 +346,13 @@ function showResult(mint: string, result: ScanLike, entry = false): void {
   const { score, level } = result.risk;
   tokenAge = result.tokenAge;
   // Mint réellement analysé (la page peut afficher une pool) : c'est sous lui que la position est gardée.
-  if (tracker?.address === mint) tracker.mint = result.mint ?? mint;
+  // Pas sur la note provisoire : le token n'entre dans l'historique qu'avec la note définitive
+  // (un achat vu entre-temps attend, avec son heure exacte).
+  if (tracker?.address === mint && !result.pending?.length) tracker.mint = result.mint ?? mint;
   const cls = levelClass(level);
 
   const head = el('div', 'head');
-  head.append(el('span', `score ${cls}`, String(score)));
+  head.append(el('span', `score ${cls}`, `${score}${result.pending?.length ? '…' : ''}`));
   head.append(el('span', `level bg-${cls}`, level));
   const scale = el('div', 'scale');
   // Le sens de l'échelle est écrit à côté du chiffre : un « 75 » nu se lit
@@ -354,6 +365,7 @@ function showResult(mint: string, result: ScanLike, entry = false): void {
   const refresh = el('button', 'icon', '↻') as HTMLButtonElement;
   refresh.title = 'Actualiser la note';
   refresh.addEventListener('click', () => {
+    finalShown = null;
     refresh.disabled = true;
     refresh.textContent = '…';
     refresh.closest('.panel')?.classList.add('busy');
@@ -371,6 +383,17 @@ function showResult(mint: string, result: ScanLike, entry = false): void {
   ageLine = el('div', 'age');
   body.append(ageLine);
   renderAge();
+  const pending = result.pending ?? [];
+  if (pending.length) {
+    const what = pending.map((p) => (p === 'creator' ? 'historique du dev' : 'wallets frais')).join(' et ');
+    body.append(el('div', 'prov', `Note provisoire — ${what} en cours… La note définitive s'affiche dans quelques secondes.`));
+  }
+  if (result.fresh) {
+    const f = result.fresh;
+    const line = el('div', 'age', `Wallets frais (moins de 24 h) : `);
+    line.append(el('span', f.pct >= 20 ? 'loss' : f.pct >= 5 ? 'orange' : '', `${f.pct.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} % de la supply`), ` · ${f.count}/${f.checked} gros holders`);
+    body.append(line);
+  }
   if (entry) body.append(el('div', 'age', 'Analyse faite au moment de l’achat (IN) : gardée avec la position.'));
   if (result.history?.deadAtOpen) {
     body.append(el('div', 'dead', `Déjà rug à l'ouverture — ${result.history.deadAtOpen}. Ce token est ignoré dans les statistiques.`));
@@ -378,7 +401,8 @@ function showResult(mint: string, result: ScanLike, entry = false): void {
   // Un module absent, c'est un angle mort — pas une bonne nouvelle. Sans ce
   // bandeau, un token dont l'analyse des holders a échoué s'affiche VERT et
   // se lit comme « sain », alors que la mesure la plus importante manque.
-  const missing = result.risk.modules.filter((m) => m.score === null);
+  // Modules encore en cours (note provisoire) : annoncés plus haut, pas « manquants ».
+  const missing = result.risk.modules.filter((m) => m.score === null && !(pending.includes('creator') && m.unavailableReason === 'analyse en cours'));
   if (missing.length > 0) {
     // Chaque module manquant avec SA raison : un réglage désactivé n'est pas un RPC défaillant.
     const details = missing.map((m) => `${m.label} — ${describeMissingModule(m.unavailableReason)}`).join(' · ');
@@ -417,9 +441,11 @@ function showResult(mint: string, result: ScanLike, entry = false): void {
   if (socials) body.append(socials);
   paperLine = el('div', 'paper');
   body.append(paperLine);
-  renderPaper();
   body.append(historyLine(result, mint));
   render([head, body]);
+  // Lignes vivantes remplies dès l'affichage (elles ne se dessinent que dans le panneau).
+  renderAge();
+  renderPaper();
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +629,7 @@ async function evaluate(): Promise<void> {
   }
   if (detection.address === currentMint) return;
   currentMint = detection.address;
+  finalShown = null;
   startTracking(detection.address);
   if (dismissed.has(detection.address)) return;
 
@@ -624,7 +651,10 @@ async function requestScan(address: string, force: boolean): Promise<void> {
     const response = (await chrome.runtime.sendMessage({ type: 'scan', mint: address, force })) as ScanResponse;
     // La page a pu changer pendant le scan : on n'écrase pas un verdict plus récent.
     if (currentMint !== address) return;
-    if (response?.ok) showResult(address, response.result);
+    if (response?.ok) {
+      finalShown = address;
+      showResult(address, response.result);
+    }
     else showError(response?.error ?? 'analyse impossible', response?.action);
   } catch (error) {
     if (isInvalidated(error) || !extensionAlive()) {
@@ -638,10 +668,56 @@ async function requestScan(address: string, force: boolean): Promise<void> {
 }
 
 /**
+ * Pré-analyse : quand la souris s'attarde sur le lien d'un token (liste
+ * pump.fun, GMGN, Axiom…), son analyse démarre avant même le clic. À
+ * l'ouverture de la page, elle est déjà en cours ou terminée. Un seul lien à la
+ * fois : en survoler un autre annule la pré-analyse précédente.
+ */
+function watchHover(): void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const recent = new Map<string, number>();
+  const prefetch = (address: string) => {
+    if (address === currentMint || orphaned || !extensionAlive()) return;
+    const last = recent.get(address);
+    if (last && Date.now() - last < 30_000) return;
+    recent.set(address, Date.now());
+    if (recent.size > 200) recent.delete(recent.keys().next().value!);
+    void chrome.runtime.sendMessage({ type: 'scan', mint: address, prefetch: true }).catch(() => undefined);
+  };
+  const addressOf = (event: Event): string | null => {
+    const link = (event.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+    if (!link || link.closest(`#${PANEL_ID}`)) return null;
+    return detectToken(link.href)?.address ?? null;
+  };
+  document.addEventListener(
+    'pointerover',
+    (event) => {
+      clearTimeout(timer);
+      const address = addressOf(event);
+      if (address) timer = setTimeout(() => prefetch(address), HOVER_MS);
+    },
+    { passive: true, capture: true },
+  );
+  // Clic : plus d'attente, la page va s'ouvrir.
+  document.addEventListener(
+    'pointerdown',
+    (event) => {
+      const address = addressOf(event);
+      if (!address) return;
+      clearTimeout(timer);
+      prefetch(address);
+    },
+    { passive: true, capture: true },
+  );
+}
+
+/**
  * Surveille les changements d'URL d'une SPA.
  *
- * `popstate` ne couvre que le bouton Retour : une navigation interne passe par
- * `pushState`/`replaceState`, qui n'émettent aucun événement. On les enveloppe.
+ * Le content script vit dans un monde isolé : envelopper `history.pushState` ne
+ * voit pas les appels du site. L'API Navigation, elle, signale toute
+ * navigation interne (`currententrychange`) ; un relevé de l'URL toutes les
+ * 200 ms sert de filet aux navigateurs ou sites qui y échappent.
  */
 function watchNavigation(onChange: () => void): void {
   let last = location.href;
@@ -650,17 +726,10 @@ function watchNavigation(onChange: () => void): void {
     last = location.href;
     onChange();
   };
-  for (const name of ['pushState', 'replaceState'] as const) {
-    const original = history[name];
-    history[name] = function patched(this: History, ...args: Parameters<History['pushState']>) {
-      const out = original.apply(this, args);
-      queueMicrotask(notify);
-      return out;
-    } as History[typeof name];
-  }
+  const nav = (globalThis as { navigation?: EventTarget }).navigation;
+  nav?.addEventListener?.('currententrychange', () => queueMicrotask(notify));
   addEventListener('popstate', notify);
-  // Filet : certaines SPA réécrivent l'URL par d'autres voies.
-  setInterval(notify, 1_000);
+  setInterval(notify, 200);
 }
 
 void (async () => {
@@ -672,14 +741,23 @@ void (async () => {
   // une réponse partielle. Les deux doivent être sans conséquence — un réglage
   // illisible ne doit pas priver l'utilisateur du panneau.
   const settings = (await chrome.runtime.sendMessage({ type: 'settings' }).catch(() => null)) as
-    | { ok: true; settings?: { autoScan?: boolean; paperTracking?: boolean } }
+    | { ok: true; settings?: { autoScan?: boolean; paperTracking?: boolean; prefetch?: boolean } }
     | null;
   if (settings?.ok && settings.settings?.autoScan === false) return;
   paperEnabled = settings?.settings?.paperTracking !== false;
   setInterval(paperTick, 1_000);
 
   watchNavigation(() => void evaluate());
-  // Les terminaux peignent leur contenu après le premier rendu : on laisse
-  // l'URL se stabiliser avant la première évaluation.
-  setTimeout(() => void evaluate(), 600);
+  // Note provisoire envoyée par le service worker pendant l'analyse.
+  chrome.runtime.onMessage.addListener((message: { type?: string; address?: string; result?: ScanLike }) => {
+    const address = message?.address;
+    if (message?.type !== 'scan-partial' || !message.result || !address || address !== currentMint) return;
+    if (finalShown === address || dismissed.has(address) || orphaned) return;
+    showResult(address, message.result);
+  });
+  if (settings?.settings?.prefetch !== false) watchHover();
+  // Token lisible dans l'URL (cas courant) : analyse immédiate. Sinon, le
+  // terminal doit d'abord peindre la page où chercher l'adresse.
+  if (detectToken(location.href)) void evaluate();
+  else setTimeout(() => void evaluate(), 600);
 })();

@@ -57,6 +57,63 @@ et remonte jusqu'au mint (bonding curve Pump.fun, pools PumpSwap et Raydium) ; l
 panneau indique alors le mint réellement analysé. Pour une pool d'un autre DEX,
 il explique qu'il faut ouvrir la page du token.
 
+## Vitesse de l'analyse
+
+Mesures dans Chromium, RPC simulé (aller-retour 90 ms, offre gratuite Helius
+limitée à 10 requêtes/s), token Pump.fun récent dont le dev a un historique :
+
+| | 1.4.1 | 1.5.0 |
+|---|---|---|
+| Ouverture de la page → première note | 5,7 s | **0,8 s** (provisoire) |
+| Lien survolé puis cliqué → première note | 5,6 s | **0,35 s** |
+| Note définitive (historique du dev + wallets frais) | 5,7 s | 5,4 s (1,6 s avec une offre à 50 req/s) |
+| Actualisation ↻ | 5,0 s | **0,7 s** |
+
+Ce qui fait la différence :
+
+- **Note provisoire** : dès que holders, dusting et réserve sont connus, la
+  note s'affiche (suivie de « … » et d'un bandeau bleu), sans attendre
+  l'historique du dev ni les wallets frais. La note définitive la remplace
+  quelques secondes plus tard ; seule elle entre dans l'historique.
+- **Moins de requêtes sur le chemin critique** : le mint, ses métadonnées, la
+  bonding curve et la pool PumpSwap (adresse canonique, dérivée du mint) sont
+  lus en une seule requête ; les métadonnées des tokens Token-2022 (Pump.fun
+  récents) sont décodées sur place ; le top holders est tiré du recensement
+  déjà fait pour le dusting (getTokenLargestAccounts ne sert plus qu'en relais
+  s'il tarde) ; la part du dev aussi. Un token migré n'a plus besoin des six
+  recherches getProgramAccounts de pools.
+- **Priorités** : sous le plafond de débit, les requêtes de la page ouverte
+  partent d'abord, celles qui donnent la note provisoire en tête ; les
+  pré-analyses et les suivis passent après.
+- **Cache** : les transactions déjà lues d'un dev et l'activité des wallets
+  sont gardées (`chrome.storage.session`) : ↻, suivi automatique ou autre token
+  du même dev ne relisent que le nouveau.
+- **Pré-analyse au survol** : quand la souris s'attarde ¼ s sur le lien d'un
+  token (liste pump.fun, GMGN…), son analyse démarre ; à l'ouverture, la note est
+  déjà là ou presque. Elle n'entre dans l'historique que si la page est ouverte.
+  Désactivable dans les réglages.
+- **Offre RPC** (réglages) : avec une offre payante, choisis son débit (Helius
+  Developer 50/s, Business 200/s…) : la note définitive passe sous 2 s.
+- Le panneau démarre dès le début du chargement de la page, et suit les
+  navigations internes des terminaux (API Navigation) au lieu d'un relevé
+  par seconde.
+
+`npm run bench:scan` reproduit la mesure côté moteur (RTT, débit et offre
+réglables : `RTT=150 RPS=50 MAX_RPS=45 CONCURRENCY=12 npm run bench:scan`).
+
+## Wallets frais
+
+Le panneau affiche « Wallets frais (moins de 24 h) : 18 % de la supply · 4/12
+gros holders ». Un wallet est frais si son historique complet tient en moins de
+30 transactions et que la première date de moins de 24 h : c'est la signature
+d'un lancement « bundlé » (le dev crée et finance des wallets juste avant le
+lancement, achète avec, puis revend par eux). Les 12 plus gros wallets (hors
+protocole et créateur, au moins 0,3 % de la supply) sont examinés, une requête
+chacun, mise en cache 5 min. La part détenue entre dans le module « Clustering &
+wallets frais » (alerte dès 5 %, critique dès 20 %, plancher de note à 60 dès
+30 %), est gardée dans l'historique et comparée entre run et rug sur la page
+d'analyse : c'est là que tes propres trades diront si ces seuils sont les bons.
+
 ## Panneau : actualiser la note
 
 Le bouton **↻** en haut du panneau relance l'analyse immédiatement, sans

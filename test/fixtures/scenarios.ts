@@ -3,7 +3,7 @@
  * démo hors-ligne (npm run demo).
  */
 import { PublicKey, SystemProgram } from '@solana/web3.js';
-import { anchorAccountDiscriminator, bondingCurvePda, rentExemptMinimum } from '../../src/analyzers/pumpfun.js';
+import { anchorAccountDiscriminator, bondingCurvePda, canonicalPumpSwapPool, rentExemptMinimum } from '../../src/analyzers/pumpfun.js';
 import { metaplexMetadataPda } from '../../src/analyzers/token.js';
 import {
   METAPLEX_METADATA_PROGRAM_ID,
@@ -29,8 +29,12 @@ const initMint2 = (mint: PublicKey) => ({
   stackHeight: 2,
 });
 
-/** Scénario 1 : token Pump.fun gradué, wallets clonés, dusting, liquidité minuscule. */
-export function buildRugChain() {
+/**
+ * Scénario 1 : token Pump.fun gradué, wallets clonés, dusting, liquidité minuscule.
+ * La pool PumpSwap est à son adresse canonique (comme après une migration
+ * Pump.fun) ; `canonicalPool: false` la place ailleurs (recherche nécessaire).
+ */
+export function buildRugChain(opts: { canonicalPool?: boolean } = {}) {
   const chain = new MockChain();
   const mint = randomKey();
   const creator = randomKey();
@@ -41,7 +45,7 @@ export function buildRugChain() {
   chain.setAccount(bondingCurvePda(mint), PUMP_FUN_PROGRAM_ID, curveData, Number(rentExemptMinimum(150)));
 
   // Pool PumpSwap : base = token, quote = WSOL
-  const pool = randomKey();
+  const pool = opts.canonicalPool === false ? randomKey() : canonicalPumpSwapPool(mint);
   const baseVault = randomKey();
   const quoteVault = randomKey();
   chain.setAccount(
