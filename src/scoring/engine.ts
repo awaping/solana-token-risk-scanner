@@ -351,7 +351,11 @@ export function scoreDusting(d: DustingAnalysis): SubScore {
 // Réserve réelle
 // ---------------------------------------------------------------------------
 
-export function scoreReserve(r: ReserveAnalysis): SubScore {
+/** Bonding curve sous 1 SOL après au moins 200 transactions : les acheteurs sont ressortis. */
+const DRAINED_CURVE = { maxSol: 1, minTransactions: 200 } as const;
+
+/** `mintTransactions` : activité passée du token (pour reconnaître une courbe vidée). */
+export function scoreReserve(r: ReserveAnalysis, mintTransactions?: { count: number; complete: boolean }): SubScore {
   const findings: Finding[] = [];
   const floors: ScoreFloor[] = [];
   const ratioTxt = fmtPct(r.reserveToMcapRatio * 100, 2);
@@ -372,7 +376,12 @@ export function scoreReserve(r: ReserveAnalysis): SubScore {
       severity: 'info',
       message: `Bonding curve Pump.fun à ${fmtPct(r.bondingCurveProgressPct ?? 0, 1)} · réserve réelle ${fmtSol(r.realReserveSol)} · mcap théorique ${fmtSol(r.marketCapSol)} (ratio ${ratioTxt})`,
     });
-    if (r.realReserveSol < 5) {
+    if (mintTransactions && mintTransactions.count >= DRAINED_CURVE.minTransactions && r.realReserveSol < DRAINED_CURVE.maxSol) {
+      // Beaucoup d'achats par le passé, presque plus rien dans la courbe : vidée (rug ou abandon).
+      const activity = `${mintTransactions.complete ? '' : 'au moins '}${fmtNum(mintTransactions.count)} transactions`;
+      findings.push({ severity: 'critical', message: `Courbe vidée : ${fmtSol(r.realReserveSol)} restants après ${activity} — les acheteurs sont ressortis (rug ou abandon)` });
+      floors.push({ floor: 70, reason: `Courbe vidée (${fmtSol(r.realReserveSol)} après ${activity})` });
+    } else if (r.realReserveSol < 5) {
       findings.push({ severity: 'warning', message: `Liquidité faible : seulement ${fmtSol(r.realReserveSol)} réellement en réserve` });
     } else {
       findings.push({ severity: 'ok', message: `${fmtSol(r.realReserveSol)} réels adossés à la curve` });
@@ -521,6 +530,8 @@ export interface ScoringInput {
   fresh?: ModuleOutcome<FreshWalletsAnalysis>;
   /** Âge du token (h), s'il est connu. */
   tokenAgeHours?: number;
+  /** Transactions sur le mint depuis sa création (complete = false : borne basse). */
+  mintTransactions?: { count: number; complete: boolean };
   dusting: ModuleOutcome<DustingAnalysis>;
   reserve: ModuleOutcome<ReserveAnalysis>;
   creator: ModuleOutcome<CreatorAnalysis>;
@@ -545,7 +556,7 @@ export function computeRiskScore(input: ScoringInput): RiskScore {
     toModuleScore('holders', input.holders, (d) => scoreHolders(d, input.creator.status === 'ok'), floors),
     toModuleScore('clustering', input.clustering, (d) => scoreClustering(d, top20Pct, input.fresh), floors),
     toModuleScore('dusting', input.dusting, scoreDusting, floors),
-    toModuleScore('reserve', input.reserve, scoreReserve, floors),
+    toModuleScore('reserve', input.reserve, (d) => scoreReserve(d, input.mintTransactions), floors),
     toModuleScore('creator', input.creator, (d) => scoreCreator(d, input.tokenAgeHours), floors),
   ];
 

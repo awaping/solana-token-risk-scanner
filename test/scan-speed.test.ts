@@ -183,3 +183,42 @@ test('rug du dev (cas réel) : vendu toute sa position puis vidé son wallet →
   assert.ok(creator.findings.some((f) => f.severity === 'critical' && f.message.startsWith('Rug du dev')), JSON.stringify(creator.findings));
   assert.match(result.risk.floors[0]!.reason, /Rug du dev/);
 });
+
+test('rug du dev malgré le spam reçu ensuite par son wallet, et âge exact malgré un historique du mint trop long', async () => {
+  const { buildDevRugChain } = await import('./fixtures/scenarios.js');
+  // 80 spams après le rug : les 50 dernières transactions du dev ne sont plus les siennes.
+  const { chain, mint } = buildDevRugChain({ spam: 80, trades: 2_100 });
+  const { url } = await serve(chain);
+  const started = Date.now();
+  const result = await scanToken(mint.toBase58(), config(url));
+  assert.equal(result.creator.status, 'ok');
+  if (result.creator.status === 'ok') assert.ok(Math.abs(result.creator.data.soldPct! - 5) < 1e-9, 'vente lue sur le compte de token du dev');
+  assert.equal(result.risk.level, 'ROUGE', `note ${result.risk.score}`);
+  assert.ok(result.risk.modules.find((m) => m.id === 'creator')!.findings.some((f) => f.message.startsWith('Rug du dev')));
+  // Plus de 2 pages de transactions sur le mint : la création est datée par l'achat du dev.
+  assert.equal(result.tokenAge?.exact, true);
+  const age = (started - result.tokenAge!.createdAt.getTime()) / 1000;
+  assert.ok(Math.abs(age - 72) < 5, `âge ${age} s`);
+});
+
+test('courbe vidée (0,52 SOL après des milliers de transactions) : ROUGE même sans rug du dev visible', async () => {
+  const { buildDevRugChain } = await import('./fixtures/scenarios.js');
+  const { chain, mint, creator } = buildDevRugChain({ trades: 2_100, curveLamports: 30_516_300_000n });
+  // Le dev n'a rien acheté : aucune vente à lui reprocher, seule la courbe parle.
+  chain.signatures.set(creator.toBase58(), []);
+  const { url } = await serve(chain);
+  const result = await scanToken(mint.toBase58(), config(url));
+  assert.equal(result.reserve.status === 'ok' && result.reserve.data.marketType, 'bonding-curve');
+  const reserve = result.risk.modules.find((m) => m.id === 'reserve')!;
+  assert.ok(reserve.findings.some((f) => f.severity === 'critical' && f.message.startsWith('Courbe vidée')), JSON.stringify(reserve.findings));
+  assert.ok(result.risk.score >= 70, `note ${result.risk.score}`);
+});
+
+test('transactions du dev à lire : récentes et anciennes quand l’historique est complet', async () => {
+  const { pickTransactions } = await import('../src/analyzers/creator.js');
+  const list = Array.from({ length: 100 }, (_, i) => i); // 0 = la plus récente
+  assert.deepEqual(pickTransactions(list.slice(0, 20), 30, true), list.slice(0, 20));
+  assert.deepEqual(pickTransactions(list, 6, true), [0, 1, 2, 97, 98, 99]);
+  assert.deepEqual(pickTransactions(list, 6, false), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(pickTransactions(list, 0, true), []);
+});

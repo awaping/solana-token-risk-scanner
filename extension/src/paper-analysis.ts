@@ -47,6 +47,9 @@ export function alreadyRugged(point: ScanPoint): string | undefined {
   const m = point.metrics;
   if (m.reserveSol === undefined || !m.marketType) return undefined;
   if (m.marketType === 'amm-pool' && m.reserveSol < POOL_DEAD_SOL) return `liquidité retirée : ${sol(m.reserveSol)} dans la pool`;
+  if (m.marketType === 'bonding-curve' && m.reserveSol < 1 && (m.mintTxCount ?? 0) >= 200) {
+    return `bonding curve vidée : ${sol(m.reserveSol)} restants après ${m.mintTxCount} transactions`;
+  }
   if (m.marketType === 'bonding-curve' && m.reserveSol < CURVE_DEAD_SOL) {
     if ((m.mintTxCount ?? 0) >= CURVE_DEAD_TX) return `bonding curve vidée : ${sol(m.reserveSol)} restants après ${m.mintTxCount} transactions`;
     if ((point.tokenAgeSec ?? 0) >= CURVE_DEAD_AGE_SEC) return `bonding curve vide (${sol(m.reserveSol)}) ${formatAge(point.tokenAgeSec!)} après le lancement`;

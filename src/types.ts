@@ -242,6 +242,8 @@ export interface CreatorAnalysis {
    */
   boughtPct?: number;
   soldPct?: number;
+  /** Création du mint, lue dans la transaction où le dev a acheté à la création. */
+  mintCreatedAt?: Date;
   /** Mints créés dans la fenêtre inspectée (token analysé inclus). */
   createdMints: string[];
   /** Tokens créés précédemment (hors token analysé). */

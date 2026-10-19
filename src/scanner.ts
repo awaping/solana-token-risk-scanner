@@ -254,7 +254,12 @@ export async function scanToken(mintAddress: string, config: ScannerConfig, opti
     tokenAge?: TokenAge;
     pending?: Array<'creator' | 'fresh'>;
   }): ScanResult => {
-    const { holders, dusting, reserve, creator, fresh, tokenAge, pending } = parts;
+    const { holders, dusting, reserve, creator, fresh, pending } = parts;
+    // Historique du mint trop long pour remonter à sa création : la transaction où le
+    // dev a acheté à la création (lue sur son compte de token) la date exactement.
+    const devCreation = creator.status === 'ok' ? creator.data.mintCreatedAt : undefined;
+    const tokenAge: TokenAge | undefined =
+      parts.tokenAge && !parts.tokenAge.exact && devCreation ? { ...parts.tokenAge, createdAt: devCreation, exact: true } : parts.tokenAge;
     // Signale le créateur dans le classement des holders.
     const creatorAddress = creator.status === 'ok' ? creator.data.address : earlyCreator?.address;
     if (holders.status === 'ok' && creatorAddress) {
@@ -268,7 +273,17 @@ export async function scanToken(mintAddress: string, config: ScannerConfig, opti
     const clustering: ScanResult['clustering'] =
       holders.status === 'ok' ? { status: 'ok', data: analyzeClustering(holders.data.wallets) } : unavailable('dépend du module holders (indisponible)');
     const tokenAgeHours = tokenAge ? (Date.now() - tokenAge.createdAt.getTime()) / 3_600_000 : undefined;
-    const risk = computeRiskScore({ token, holders, clustering, ...(fresh ? { fresh } : {}), ...(tokenAgeHours !== undefined ? { tokenAgeHours } : {}), dusting, reserve, creator });
+    const risk = computeRiskScore({
+      token,
+      holders,
+      clustering,
+      ...(fresh ? { fresh } : {}),
+      ...(tokenAgeHours !== undefined ? { tokenAgeHours } : {}),
+      ...(tokenAge ? { mintTransactions: { count: tokenAge.transactions, complete: !parts.tokenAge || parts.tokenAge.exact } } : {}),
+      dusting,
+      reserve,
+      creator,
+    });
     return {
       mint: token.mint,
       ...(resolvedFrom ? { resolvedFrom } : {}),

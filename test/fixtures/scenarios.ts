@@ -3,6 +3,7 @@
  * démo hors-ligne (npm run demo).
  */
 import { PublicKey, SystemProgram } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { anchorAccountDiscriminator, bondingCurvePda, canonicalPumpSwapPool, rentExemptMinimum } from '../../src/analyzers/pumpfun.js';
 import { metaplexMetadataPda } from '../../src/analyzers/token.js';
 import {
@@ -138,8 +139,13 @@ export const SCENARIOS = {
  * Wallet du dev tout neuf ; il crée le token en achetant 5 % de la supply, revend
  * tout 30 s plus tard puis vide son wallet. La courbe ne garde que ~2,4 SOL et les
  * holders restants sont dispersés (top 10 ≈ 4 %).
+ *
+ * Options du cas réel, quelques minutes plus tard : `spam` transactions reçues
+ * par le wallet du dev après son rug (airdrops, poussière) ; `trades`
+ * transactions sur le mint (historique trop long pour remonter à la création) ;
+ * `curveSol` : SOL virtuels de la courbe (32,36 → ~2,4 SOL réels).
  */
-export function buildDevRugChain() {
+export function buildDevRugChain(opts: { spam?: number; trades?: number; curveLamports?: bigint } = {}) {
   const chain = new MockChain();
   const mint = randomKey();
   const creator = randomKey();
@@ -147,16 +153,19 @@ export function buildDevRugChain() {
   chain.addMint({ mint, supply: SUPPLY });
   chain.setAccount(creator, SystemProgram.programId, Buffer.alloc(0), 5_852_000); // 0,005852 SOL
 
-  const state = curveStateAt(32_360_000_000n); // ≈ 2,36 SOL réels
+  const state = curveStateAt(opts.curveLamports ?? 32_360_000_000n); // ≈ 2,36 SOL réels par défaut
   const curve = bondingCurvePda(mint);
   chain.setAccount(curve, PUMP_FUN_PROGRAM_ID, encodeBondingCurve({ ...state, creator }), Number(state.realSolReserves + rentExemptMinimum(150)));
   chain.addTokenAccount(mint, curve, state.realTokenReserves + 206_900_000_000_000n);
   for (let k = 0; k < 40; k++) chain.addTokenAccount(mint, randomKey(), pctOf(0.4 + (k % 5) * 0.02));
 
   const devBag = pctOf(5);
-  chain.addTransaction([creator, mint], { signer: creator, innerInstructions: [initMint2(mint)], tokenBalances: [{ mint, owner: creator, amount: devBag }], blockTime: now - 72 });
-  chain.addTransaction([creator], { signer: creator, preTokenBalances: [{ mint, owner: creator, amount: devBag }], tokenBalances: [{ mint, owner: creator, amount: 0n }], blockTime: now - 40 });
+  // Compte de token associé du dev : touché par son achat à la création et par sa vente.
+  const devAta = getAssociatedTokenAddressSync(mint, creator, true);
+  chain.addTransaction([creator, mint, devAta], { signer: creator, innerInstructions: [initMint2(mint)], tokenBalances: [{ mint, owner: creator, amount: devBag }], blockTime: now - 72 });
+  chain.addTransaction([creator, devAta], { signer: creator, preTokenBalances: [{ mint, owner: creator, amount: devBag }], tokenBalances: [{ mint, owner: creator, amount: 0n }], blockTime: now - 40 });
   chain.addTransaction([creator], { signer: creator, blockTime: now - 30 }); // SOL envoyés ailleurs
-  for (let i = 0; i < 60; i++) chain.addTransaction([mint], { signer: randomKey(), blockTime: now - 70 + i });
+  for (let i = 0; i < (opts.trades ?? 60); i++) chain.addTransaction([mint], { signer: randomKey(), blockTime: now - 70 + Math.floor(i / 50) });
+  for (let i = 0; i < (opts.spam ?? 0); i++) chain.addTransaction([creator], { signer: randomKey(), blockTime: now - 20 + Math.floor(i / 10) });
   return { chain, mint, creator };
 }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Solana Token Risk Scanner",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsDK2JZL/9yDRV05DgGG6AGBjU134Ir4lM5TdpXEFnhZuDdVHfTRGnbof+5kHIfuRWyGJxHaqQ+SsZ4xhtaG4kpVINu/KC+ztZgngal8MXAB3NfdowBudr++0LGwWXzaOzGUEMrBN5cnQ+dpInqyoJX9PA5NeWUbGDLLOxV8kh9yJtr0vK1S80DTTnR1fbqeZvOca1CMTwz0M//JZbSyGJDvN+QEUC5Oj/eFm+8gfcCtmFpEqVTVOYAFmKF5jkcai34cd0a1EW1WZh+WeLAnHINCsgYwfubCexEsfF/MNCuw1h14EbiCkzyVAVHrHskQP66M6cK0uL0V0R4gIsPlc1QIDAQAB",
   "description": "Affiche le score de risque d'un token Solana (0 = sain, 100 = danger) par-dessus les terminaux memecoin.",
   "minimum_chrome_version": "120",

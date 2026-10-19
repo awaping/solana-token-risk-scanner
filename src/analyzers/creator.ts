@@ -16,7 +16,7 @@ import {
   type ParsedTransactionWithMeta,
   type PartiallyDecodedInstruction,
 } from '@solana/web3.js';
-import { unpackAccount } from '@solana/spl-token';
+import { getAssociatedTokenAddressSync, unpackAccount } from '@solana/spl-token';
 import type { ScanCache } from '../cache.js';
 import type { ScannerConfig } from '../config.js';
 import type { RpcClient } from '../rpc/client.js';
@@ -162,19 +162,60 @@ export function tokenDeltas(tx: ParsedTransactionWithMeta, owner: string): Recor
   return Object.fromEntries([...sum].filter(([, v]) => v !== 0n).map(([k, v]) => [k, v.toString()]));
 }
 
-export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, scanLimit: number, cache?: ScanCache): Promise<CreatorHistory> {
+/** Lecture d'une transaction analysée, partagée entre les lectures d'une même analyse (pas de doublon). */
+export type TransactionReader = (signature: string) => Promise<ParsedTransactionWithMeta | null>;
+
+export function transactionReader(rpc: RpcClient): TransactionReader {
+  const memo = new Map<string, Promise<ParsedTransactionWithMeta | null>>();
+  return (signature) => {
+    let tx = memo.get(signature);
+    if (!tx) {
+      tx = rpc.call((c) => c.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 })).catch(() => null);
+      memo.set(signature, tx);
+    }
+    return tx;
+  };
+}
+
+/**
+ * Transactions à lire parmi l'historique : toutes s'il est court ; sinon les plus
+ * récentes, et, quand l'historique est complet, aussi les plus anciennes. Un
+ * wallet de dev jetable reçoit souvent des dizaines de spams après son rug : ses
+ * propres transactions (création, achat, vente) sont alors les plus anciennes.
+ */
+export function pickTransactions<T>(ok: T[], limit: number, complete: boolean): T[] {
+  if (limit <= 0) return [];
+  if (ok.length <= limit) return ok;
+  if (!complete) return ok.slice(0, limit);
+  const newest = Math.ceil(limit / 2);
+  return [...ok.slice(0, newest), ...ok.slice(ok.length - (limit - newest))];
+}
+
+export async function scanCreatorHistory(
+  rpc: RpcClient,
+  creator: PublicKey,
+  scanLimit: number,
+  options: { cache?: ScanCache; read?: TransactionReader; signatureWindow?: number } = {},
+): Promise<CreatorHistory> {
+  const { cache } = options;
+  const read = options.read ?? transactionReader(rpc);
+  // Signatures lues pour dater le wallet et compter son activité (une requête jusqu'à 1000).
+  const window = Math.max(scanLimit, options.signatureWindow ?? 1, 1);
   const cacheKey = `creator-tx:${creator.toBase58()}`;
   const [lamports, signatures, known = {}] = await Promise.all([
     rpc.call((c) => c.getBalance(creator)),
-    // Au moins 1 signature pour estimer l'activité même si le scan est désactivé.
-    fetchSignatures(rpc, creator, Math.max(scanLimit, 1)),
+    fetchSignatures(rpc, creator, window),
     cache?.get<KnownTransactions>(cacheKey),
   ]);
 
   const created = new Set<string>();
   const tokenFlows = new Map<string, { in: bigint; out: bigint }>();
   const owner = creator.toBase58();
-  const toScan = scanLimit > 0 ? signatures.filter((s) => s.err === null).slice(0, scanLimit) : [];
+  const toScan = pickTransactions(
+    signatures.filter((s) => s.err === null),
+    scanLimit,
+    signatures.length < window,
+  );
   const seen: KnownTransactions = {};
   // Transactions déjà lues lors d'une analyse précédente (même dev, ↻, suivi) : pas relues.
   await Promise.all(
@@ -182,9 +223,7 @@ export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, sca
       const cached = known[signature];
       let facts = cached && !Array.isArray(cached) ? cached : undefined;
       if (!facts) {
-        const tx = await rpc
-          .call((c) => c.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 }))
-          .catch(() => null);
+        const tx = await read(signature);
         if (!tx) return;
         const signedByCreator = tx.transaction.message.accountKeys.some((k) => k.signer && k.pubkey.equals(creator));
         facts = { m: signedByCreator ? extractInitializedMints(tx) : [], d: tokenDeltas(tx, owner) };
@@ -203,7 +242,7 @@ export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, sca
   const txScanned = Object.keys(seen).length;
   if (cache && txScanned > 0) await cache.set(cacheKey, seen, CREATOR_CACHE_MS);
 
-  const fullHistory = signatures.length < Math.max(scanLimit, 1);
+  const fullHistory = signatures.length < window;
   const oldest = signatures[signatures.length - 1];
   const oldestActivity = oldest?.blockTime ? new Date(oldest.blockTime * 1000) : undefined;
 
@@ -217,6 +256,60 @@ export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, sca
     walletAgeDays: fullHistory && oldestActivity ? (Date.now() - oldestActivity.getTime()) / 86_400_000 : undefined,
     oldestActivity,
   };
+}
+
+/** Ce que le dev a fait de ce token : entrées, sorties, et création (si son premier achat est la création). */
+export interface DevPosition {
+  in: bigint;
+  out: bigint;
+  /** Transaction de création du mint trouvée parmi celles du compte du dev (horodatage Unix, s). */
+  createdAt?: number;
+}
+
+/**
+ * Position du dev sur CE token, lue sur son compte de token associé : seules ses
+ * opérations sur ce token le touchent (achat à la création, ventes, transferts),
+ * jamais les spams qui inondent son wallet après un rug. Une requête, plus la
+ * lecture de ces quelques transactions.
+ */
+export async function analyzeDevPosition(
+  rpc: RpcClient,
+  creator: PublicKey,
+  token: TokenInfo,
+  options: { read?: TransactionReader; cache?: ScanCache } = {},
+): Promise<DevPosition | null> {
+  const read = options.read ?? transactionReader(rpc);
+  const ata = getAssociatedTokenAddressSync(new PublicKey(token.mint), creator, true, new PublicKey(token.programId));
+  const cacheKey = `ata-tx:${ata.toBase58()}`;
+  const [signatures, known = {}] = await Promise.all([
+    rpc.call((c) => c.getSignaturesForAddress(ata, { limit: 50 })),
+    options.cache?.get<Record<string, { d: string; c: boolean; t?: number }>>(cacheKey),
+  ]);
+  const ok = signatures.filter((s) => s.err === null);
+  if (ok.length === 0) return null;
+  const owner = creator.toBase58();
+  const seen: Record<string, { d: string; c: boolean; t?: number }> = {};
+  await Promise.all(
+    ok.map(async ({ signature, blockTime }) => {
+      let facts = known[signature];
+      if (!facts) {
+        const tx = await read(signature);
+        if (!tx) return;
+        const t = tx.blockTime ?? blockTime ?? undefined;
+        facts = { d: tokenDeltas(tx, owner)[token.mint] ?? '0', c: extractInitializedMints(tx).includes(token.mint), ...(t ? { t } : {}) };
+      }
+      seen[signature] = facts;
+    }),
+  );
+  if (options.cache && Object.keys(seen).length) await options.cache.set(cacheKey, seen, CREATOR_CACHE_MS);
+  const position: DevPosition = { in: 0n, out: 0n };
+  for (const facts of Object.values(seen)) {
+    const delta = BigInt(facts.d);
+    if (delta > 0n) position.in += delta;
+    else position.out -= delta;
+    if (facts.c && facts.t) position.createdAt = facts.t;
+  }
+  return position;
 }
 
 /**
@@ -245,17 +338,21 @@ export async function analyzeCreator(
     }
     return total;
   };
-  const [history, held] = await Promise.all([
-    scanCreatorHistory(rpc, creator, config.creatorTxScanLimit, options.cache),
+  const read = transactionReader(rpc);
+  const [history, position, held] = await Promise.all([
+    scanCreatorHistory(rpc, creator, config.creatorTxScanLimit, { read, signatureWindow: 1_000, ...(options.cache ? { cache: options.cache } : {}) }),
+    analyzeDevPosition(rpc, creator, token, { read, ...(options.cache ? { cache: options.cache } : {}) }).catch(() => null),
     (options.holding ?? Promise.resolve(null)).then((known) => known ?? heldFromAccounts()),
   ]);
 
   const { tokenFlows, ...rest } = history;
-  const flow = tokenFlows.get(token.mint);
+  // Le compte de token du dev fait foi ; à défaut, ses transactions récentes.
+  const flow = position && (position.in > 0n || position.out > 0n) ? position : tokenFlows.get(token.mint);
   return {
     address: identity.address,
     source: identity.source,
     ...rest,
+    ...(position?.createdAt ? { mintCreatedAt: new Date(position.createdAt * 1000) } : {}),
     ...(flow && flow.in > 0n ? { boughtPct: percentOf(flow.in, token.supply) } : {}),
     ...(flow && flow.out > 0n ? { soldPct: percentOf(flow.out, token.supply) } : {}),
     holdingPct: percentOf(held, token.supply),
