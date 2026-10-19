@@ -36,6 +36,8 @@ export interface PaperSend {
   position?: PaperPosition;
   /** La position a disparu du widget : vente totale. */
   vanished?: boolean;
+  /** Sortie déclarée à la main depuis le panneau. */
+  manual?: boolean;
   wallet?: PaperWallet;
 }
 
@@ -50,6 +52,8 @@ export class PaperTracker {
   private lastSentAt = 0;
   private lastPosition?: PaperPosition;
   private missing = 0;
+  /** Première lecture sans la position : heure de la sortie si elle se confirme. */
+  private missingSince?: number;
   private walletSentAt = 0;
   private walletValue?: number;
 
@@ -69,7 +73,9 @@ export class PaperTracker {
     const elapsed = now - this.since;
     const { position, wallet } = scan.reading;
     if (!scan.found || (scan.framed && !position && !wallet)) {
-      return { view: { status: scan.framed ? 'iframe' : elapsed >= ABSENT_AFTER_MS ? 'absent' : 'recherche' } };
+      // Widget retiré de la page après une vente totale : même règle que la position disparue.
+      const vanished = this.vanishTick(now);
+      return { view: { status: scan.framed ? 'iframe' : elapsed >= ABSENT_AFTER_MS ? 'absent' : 'recherche' }, ...(vanished ? { send: vanished } : {}) };
     }
     if (elapsed < STALE_MS || (position && this.staleKey && positionKey(position) === this.staleKey && elapsed < STALE_MS * 3 && !this.lastTrade)) {
       return { view: { status: 'recherche' } };
@@ -81,16 +87,11 @@ export class PaperTracker {
       this.emptySince ??= now;
       if (now - this.emptySince >= EMPTY_STABLE_MS) this.sawEmpty = true;
       // Position revendue en totalité puis retirée du widget.
-      if (this.lastPosition && this.mint && ++this.missing >= VANISH_TICKS) {
-        send = { at: now, observed: true, position: this.lastPosition, vanished: true };
-        this.lastPosition = undefined;
-        this.lastTrade = undefined;
-        this.lastKey = undefined;
-        this.lastSentAt = now;
-      }
+      send = this.vanishTick(now);
     } else {
       this.emptySince = undefined;
       this.missing = 0;
+      this.missingSince = undefined;
       const trade = tradeKey(position);
       const key = positionKey(position);
       if (!this.mint) {
@@ -117,5 +118,28 @@ export class PaperTracker {
       this.walletValue = balance;
     }
     return { view, ...(send ? { send } : {}) };
+  }
+
+  /** Une lecture de plus sans la position vue jusque-là ; au bout de 5, c'est une sortie. */
+  private vanishTick(now: number): PaperSend | undefined {
+    if (!this.lastPosition || !this.mint) return undefined;
+    this.missingSince ??= now;
+    if (++this.missing < VANISH_TICKS) return undefined;
+    // Datée de la disparition (la vente), pas de sa confirmation 5 s plus tard.
+    const send: PaperSend = { at: this.missingSince, observed: true, position: this.lastPosition, vanished: true };
+    this.missingSince = undefined;
+    this.lastPosition = undefined;
+    this.lastTrade = undefined;
+    this.lastKey = undefined;
+    this.lastSentAt = now;
+    return send;
+  }
+
+  /** Sortie déclarée à la main (bouton du panneau) : la dernière position lue est soldée. */
+  manualExit(now: number): PaperSend | undefined {
+    if (!this.lastPosition || !this.mint) return undefined;
+    this.missing = VANISH_TICKS - 1;
+    const send = this.vanishTick(now);
+    return send ? { ...send, manual: true } : undefined;
   }
 }

@@ -131,3 +131,15 @@ test('couleurs : rouge = perte, vert = gain, le reste neutre', () => {
   assert.equal(toneOf('oklch(0.637 0.237 25.331)'), 'down');
   assert.equal(toneOf('oklch(0.723 0.219 149.579)'), 'up');
 });
+
+test('position soldée : reste à zéro, en pourcentage, ou poussière d’arrondi', () => {
+  assert.equal(isClosed({ bought: sol(1), sold: sol(1.4), remainingPct: 0 }), true);
+  assert.equal(isClosed({ bought: sol(1), sold: sol(0.5), remainingPct: 50 }), false);
+  assert.equal(isClosed({ bought: sol(1), sold: sol(1.39), remaining: sol(0.0004) }), true, 'poussière < 1 % de l’investi');
+  assert.equal(isClosed({ bought: sol(1), sold: sol(0.6), remaining: sol(0.5) }), false);
+  assert.equal(isClosed({ bought: sol(1), sold: sol(1.4) }), false, 'reste inconnu : pas de conclusion');
+  const widget = e(e(t('Bought'), t('1 SOL')), e(t('Sold'), t('1.4 SOL')), e(t('Remaining'), t('0%')), e(t('PnL'), t('+0.4 SOL')));
+  const position = readPaper(widget).position!;
+  assert.equal(position.remainingPct, 0);
+  assert.equal(isClosed(position), true);
+});

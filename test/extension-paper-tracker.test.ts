@@ -105,3 +105,24 @@ test('position absente 3 s (widget redessiné) : rien n’est envoyé', () => {
   const sends = run(tracker, 6_000, 12_000, (t) => (t <= 8_000 ? empty : pos({ bought: sol(1), pnl: sol(0.4) })));
   assert.deepEqual(sends, []);
 });
+
+test('widget DryFlip retiré de la page après la vente : sortie au bout de 5 s', () => {
+  const tracker = new PaperTracker('ADDR', T);
+  tracker.mint = 'MINT';
+  run(tracker, 3_000, 5_000, () => pos({ bought: sol(1), pnl: sol(0.4) }));
+  const sends = run(tracker, 6_000, 12_000, () => none);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0]!.vanished, true);
+  assert.equal(sends[0]!.at, T + 6_000, 'datée de la disparition, pas de la confirmation');
+});
+
+test('sortie déclarée à la main : envoyée une fois, marquée manuelle', () => {
+  const tracker = new PaperTracker('ADDR', T);
+  tracker.mint = 'MINT';
+  run(tracker, 3_000, 4_000, () => pos({ bought: sol(1), pnl: sol(-0.2) }));
+  const send = tracker.manualExit(T + 5_000);
+  assert.equal(send?.manual, true);
+  assert.equal(send?.vanished, true);
+  assert.equal(send?.position?.pnl?.value, -0.2);
+  assert.equal(tracker.manualExit(T + 6_000), undefined);
+});

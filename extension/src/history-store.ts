@@ -140,6 +140,8 @@ export interface PaperTrade {
   closes?: boolean;
   /** Sortie déduite de la disparition de la position dans le widget. */
   vanished?: boolean;
+  /** Sortie déclarée à la main depuis le panneau. */
+  manual?: boolean;
   /** Analyse lancée au moment de l'achat. */
   scan?: ScanPoint;
 }
@@ -417,7 +419,7 @@ export class HistoryStore {
   attachPaper(
     mint: string,
     reading: PaperPosition,
-    options: { at?: number; observed?: boolean; vanished?: boolean } = {},
+    options: { at?: number; observed?: boolean; vanished?: boolean; manual?: boolean } = {},
   ): Promise<{ known: boolean; buy: boolean; firstBuy: boolean; sell: boolean; closed: boolean }> {
     const at = options.at ?? Date.now();
     return this.exclusive(async () => {
@@ -431,15 +433,16 @@ export class HistoryStore {
       let position = reading;
       if (options.vanished) {
         if (!prev || !before || prev.closedAt !== undefined) return { ...none, known: true };
-        // Dernières valeurs affichées, position soldée.
+        // Dernières valeurs affichées (celles du widget, plus fraîches que la dernière écriture), position soldée.
         const { at: _seen, ...last } = before;
-        position = { ...last, remaining: { value: 0, unit: before.remaining?.unit ?? before.bought?.unit ?? '' } };
+        const shown = reading.bought || reading.sold ? reading : last;
+        position = { ...shown, remainingPct: 0, remaining: { value: 0, unit: shown.remaining?.unit ?? shown.bought?.unit ?? '' } };
       }
       if (prev && !options.vanished && positionKey(before) === positionKey(position) && at - prev.lastAt < PAPER_POINT_MS) return { ...none, known: true };
 
       // Position « disparue » qui revient telle quelle peu après : le widget s'était seulement redessiné.
       const lastTrade = prev?.trades[prev.trades.length - 1];
-      if (prev && lastTrade?.vanished && !options.vanished && at - lastTrade.at < 60_000 && tradeKey(position) === tradeKey({ bought: lastTrade.bought, sold: lastTrade.sold })) {
+      if (prev && lastTrade?.vanished && !lastTrade.manual && !options.vanished && at - lastTrade.at < 60_000 && tradeKey(position) === tradeKey({ bought: lastTrade.bought, sold: lastTrade.sold })) {
         const { closedAt: _closed, ...open } = prev;
         const restored: CoinHistory = { ...coin, paper: { ...open, trades: prev.trades.slice(0, -1), latest: { at, ...position }, lastAt: at } };
         const index = (Array.isArray(data[INDEX_KEY]) ? (data[INDEX_KEY] as CoinSummary[]) : []).map((c) => (c.mint === mint ? summarize(restored) : c));
@@ -465,6 +468,7 @@ export class HistoryStore {
           ...(age !== undefined ? { tokenAgeSec: age } : {}),
           ...(kind === 'vente' && closes ? { closes: true } : {}),
           ...(kind === 'vente' && options.vanished ? { vanished: true } : {}),
+          ...(kind === 'vente' && options.manual ? { manual: true } : {}),
         };
       };
       const trades = [...(prev?.trades ?? [])];
@@ -475,7 +479,8 @@ export class HistoryStore {
       const points = [...(prev?.points ?? [])];
       const lastPoint = points[points.length - 1];
       if (buy || sell || !lastPoint || at - lastPoint.at >= PAPER_POINT_MS) points.push(point);
-      const closedAt = closes ? (prev?.closedAt !== undefined && !reopened ? prev.closedAt : at) : undefined;
+      // Une position soldée le reste tant qu'aucun nouvel achat n'a lieu (le widget peut encore l'afficher).
+      const closedAt = closes ? (prev?.closedAt !== undefined && !reopened ? prev.closedAt : at) : reopened || buy ? undefined : prev?.closedAt;
       const paper: CoinPaper = {
         source: 'DryFlip',
         firstAt: prev?.firstAt ?? at,

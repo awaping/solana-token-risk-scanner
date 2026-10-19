@@ -295,7 +295,7 @@ test('position retirée du widget = vente totale ; nouvelle position ensuite = n
   const store = new HistoryStore(memoryStore());
   await store.record(snap('GONE', T0, 40, { createdAt: T0 - 10_000 }));
   await store.attachPaper('GONE', { bought: sol(1), remaining: sol(1.3), pnl: sol(0.3) }, { at: T0 + 1_000, observed: true });
-  const gone = await store.attachPaper('GONE', {}, { at: T0 + 9_000, observed: true, vanished: true });
+  const gone = await store.attachPaper('GONE', { bought: sol(1), remaining: sol(1.3), pnl: sol(0.3) }, { at: T0 + 9_000, observed: true, vanished: true });
   assert.deepEqual(gone, { known: true, buy: false, firstBuy: false, sell: true, closed: true });
   let coin = (await store.get('GONE'))!;
   const exit = coin.paper!.trades[1]!;
@@ -332,4 +332,30 @@ test('widget redessiné (position absente puis revenue à l’identique) : ni ve
   assert.equal(coin.paper!.closedAt, undefined, 'sortie annulée');
   assert.deepEqual(coin.paper!.trades.map((t) => t.kind), ['achat']);
   assert.equal(coin.paper!.latest.pnl?.value, 0.2);
+});
+
+test('sortie manuelle : gardée même si le widget affiche encore la position', async () => {
+  const store = new HistoryStore(memoryStore());
+  await store.record(snap('MAN', T0, 40));
+  await store.attachPaper('MAN', { bought: sol(1), sold: sol(1.3), remaining: sol(0.2), pnl: sol(0.3) }, { at: T0 + 1_000, observed: true });
+  await store.attachPaper('MAN', { bought: sol(1), sold: sol(1.3), remaining: sol(0.2), pnl: sol(0.3) }, { at: T0 + 5_000, observed: true, vanished: true, manual: true });
+  await store.attachPaper('MAN', { bought: sol(1), sold: sol(1.3), remaining: sol(0.21), pnl: sol(0.31) }, { at: T0 + 40_000, observed: true });
+  const coin = (await store.get('MAN'))!;
+  assert.equal(coin.paper!.closedAt, T0 + 5_000, 'toujours soldée');
+  assert.equal(coin.paper!.trades.at(-1)!.manual, true);
+  assert.equal(coinOutcome(coin)!.open, false);
+  // Nouvel achat : la position se rouvre.
+  const buy = await store.attachPaper('MAN', { bought: sol(1.5), sold: sol(1.3), remaining: sol(0.7), pnl: sol(0.3) }, { at: T0 + 90_000, observed: true });
+  assert.equal(buy.buy, true);
+  assert.equal((await store.get('MAN'))!.paper!.closedAt, undefined);
+});
+
+test('sortie par disparition : PnL du widget (plus frais que la dernière écriture)', async () => {
+  const store = new HistoryStore(memoryStore());
+  await store.record(snap('FRESH', T0, 40));
+  await store.attachPaper('FRESH', { bought: sol(1), pnl: sol(0) }, { at: T0 + 1_000, observed: true });
+  await store.attachPaper('FRESH', { bought: sol(1), pnl: sol(0.45) }, { at: T0 + 9_000, observed: true, vanished: true });
+  const exit = (await store.get('FRESH'))!.paper!.trades.at(-1)!;
+  assert.equal(exit.closes, true);
+  assert.equal(exit.pnl?.value, 0.45);
 });

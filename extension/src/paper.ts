@@ -27,6 +27,8 @@ export interface PaperPosition {
   sold?: PaperAmount;
   /** Valeur de ce qui reste en portefeuille. */
   remaining?: PaperAmount;
+  /** Reste affiché en pourcentage de la position (« 0 % » une fois tout revendu). */
+  remainingPct?: number;
   pnl?: PaperAmount;
   pnlPct?: number;
 }
@@ -250,6 +252,7 @@ export function readPaper(root: TextTree): PaperReading {
       ...(f.bought?.amount ? { bought: f.bought.amount } : {}),
       ...(f.sold?.amount ? { sold: f.sold.amount } : {}),
       ...(f.remaining?.amount ? { remaining: f.remaining.amount } : {}),
+      ...(f.remaining?.pct !== undefined ? { remainingPct: f.remaining.pct } : {}),
       ...(f.pnl?.amount ? { pnl: f.pnl.amount } : {}),
       ...(f.pnl?.pct !== undefined ? { pnlPct: f.pnl.pct } : {}),
     };
@@ -289,13 +292,22 @@ export function tradeKey(position: PaperPosition | undefined): string {
 export function positionKey(position: PaperPosition | undefined): string {
   if (!position) return '';
   const v = (a?: PaperAmount) => (a ? `${a.value}${a.unit}` : '-');
-  return `${tradeKey(position)}|${v(position.remaining)}|${v(position.pnl)}|${position.pnlPct ?? '-'}`;
+  return `${tradeKey(position)}|${v(position.remaining)}|${position.remainingPct ?? '-'}|${v(position.pnl)}|${position.pnlPct ?? '-'}`;
 }
 
-/** Position fermée : tout a été revendu. */
+/**
+ * Position fermée : tout a été revendu. Le reste peut s'afficher à zéro, en
+ * pourcentage (« 0 % »), ou garder une poussière d'arrondi (moins de 1 % du
+ * montant investi).
+ */
 export function isClosed(position: PaperPosition | undefined): boolean {
-  if (!position) return false;
-  return nonZero(position.sold) && position.remaining !== undefined && !nonZero(position.remaining);
+  if (!position || !nonZero(position.sold)) return false;
+  if (position.remainingPct !== undefined && position.remainingPct < 1) return true;
+  const rest = position.remaining;
+  if (!rest) return false;
+  if (!nonZero(rest)) return true;
+  const bought = position.bought;
+  return bought !== undefined && bought.unit === rest.unit && bought.value > 0 && Math.abs(rest.value) < bought.value * 0.01;
 }
 
 /** Achat supplémentaire (ou premier achat) par rapport à la position connue. */

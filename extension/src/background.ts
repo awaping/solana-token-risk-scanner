@@ -394,6 +394,7 @@ function cleanPosition(value: unknown): PaperPosition {
     if (amount) out[key] = amount;
   }
   if (typeof p.pnlPct === 'number' && Number.isFinite(p.pnlPct)) out.pnlPct = p.pnlPct;
+  if (typeof p.remainingPct === 'number' && Number.isFinite(p.remainingPct)) out.remainingPct = p.remainingPct;
   return out;
 }
 
@@ -407,7 +408,7 @@ export interface PaperReply {
   error?: string;
 }
 
-async function handlePaper(request: { mint?: string; position?: unknown; wallet?: unknown; at?: number; observed?: boolean; vanished?: boolean }): Promise<PaperReply> {
+async function handlePaper(request: { mint?: string; position?: unknown; wallet?: unknown; at?: number; observed?: boolean; vanished?: boolean; manual?: boolean }): Promise<PaperReply> {
   const at = typeof request.at === 'number' && Math.abs(request.at - Date.now()) < 120_000 ? request.at : Date.now();
   const balance = cleanAmount((request.wallet as PaperWallet | undefined)?.balance);
   if (balance) {
@@ -420,6 +421,7 @@ async function handlePaper(request: { mint?: string; position?: unknown; wallet?
     at,
     observed: request.observed === true,
     vanished: request.vanished === true,
+    manual: request.manual === true,
   });
   if (!change.known) return { ok: false, error: 'token pas encore analysé' };
 
@@ -497,7 +499,7 @@ type Request =
   | { type: 'open-options' }
   | { type: 'open-history'; mint?: string }
   | { type: 'socials'; mint: string; uri?: string; creator?: string }
-  | { type: 'paper'; mint?: string; position?: unknown; wallet?: unknown; at?: number; observed?: boolean; vanished?: boolean };
+  | { type: 'paper'; mint?: string; position?: unknown; wallet?: unknown; at?: number; observed?: boolean; vanished?: boolean; manual?: boolean };
 
 chrome.runtime.onMessage.addListener((request: Request, _sender, sendResponse) => {
   // `sendResponse` asynchrone impose de renvoyer `true` : sans ça, Chrome

@@ -488,6 +488,7 @@ function renderPaper(): void {
     if (p.pnl) add('PnL ', signedAmount(p.pnl), p.pnlPct !== undefined ? ` (${formatPct(p.pnlPct)})` : '');
     else if (p.pnlPct !== undefined) add('PnL ', el('span', p.pnlPct > 0 ? 'gain' : p.pnlPct < 0 ? 'loss' : '', formatPct(p.pnlPct)));
     if (p.remaining) add(`reste ${formatAmount(p.remaining)}`);
+    else if (p.remainingPct !== undefined) add(`reste ${formatPct(p.remainingPct).replace('+', '')}`);
     if (p.sold && p.sold.value) add(`vendu ${formatAmount(p.sold)}`);
   } else {
     const text = { recherche: 'lecture du widget…', vide: 'pas de position sur ce coin', iframe: 'widget isolé dans un cadre, illisible', absent: 'widget DryFlip non trouvé sur la page', position: '' }[v.status];
@@ -503,14 +504,26 @@ function renderPaper(): void {
   if (exit?.tokenAgeSec !== undefined) ages.push(`OUT à ${formatAge(exit.tokenAgeSec)}`);
   if (buy && exit && exit.at >= buy.at) ages.push(`détenu ${formatAge((exit.at - buy.at) / 1000)}`);
   if (ages.length) nodes.push(el('div', 'muted', ages.join(' · ')));
-  if (v.status === 'absent' || v.status === 'iframe' || v.status === 'vide') {
-    const help = el('div', 'muted');
-    const button = el('button', 'link', 'diagnostic');
-    button.title = 'Copie ce que l’extension voit du widget DryFlip, pour corriger la lecture';
-    button.addEventListener('click', () => copyDiagnostic(line));
-    help.append(v.status === 'vide' ? 'Position non lue alors que tu es IN ? ' : 'DryFlip installé ? ', button);
-    nodes.push(help);
+
+  const tools = el('div', 'muted');
+  const lastBuy = [...trades].reverse().find((t) => t.kind === 'achat');
+  const open = v.status === 'position' && !(lastBuy && trades.some((t) => t.closes && t.at >= lastBuy.at));
+  if (open) {
+    // Filet de sécurité tant que la lecture de la sortie n'est pas calée sur le widget réel.
+    const out = el('button', 'link', 'j’ai vendu (OUT)');
+    out.title = 'Enregistre la sortie maintenant, avec le dernier PnL affiché, si elle n’a pas été détectée';
+    out.addEventListener('click', () => {
+      const current = tracker;
+      const send = current?.manualExit(Date.now());
+      if (current && send) void sendPaper(current, send);
+    });
+    tools.append(out, ' · ');
   }
+  const diag = el('button', 'link', 'diagnostic');
+  diag.title = 'Copie ce que l’extension voit du widget DryFlip, pour corriger la lecture';
+  diag.addEventListener('click', () => copyDiagnostic(line));
+  tools.append(v.status === 'absent' || v.status === 'iframe' ? 'DryFlip installé ? ' : v.status === 'vide' ? 'Position non lue alors que tu es IN ? ' : '', diag);
+  nodes.push(tools);
   line.replaceChildren(...nodes);
 }
 

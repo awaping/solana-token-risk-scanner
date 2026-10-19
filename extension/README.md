@@ -150,8 +150,14 @@ holders, dusting, réserve, créateur… tels qu'au moment de l'achat, avec l'â
 token à la seconde près (lecture chaque seconde). Une position déjà ouverte à
 l'ouverture de la page est marquée comme telle (heure = première lecture). Les
 ventes (OUT) sont datées de la même façon ; une position qui disparaît du widget
-plus de 5 s vaut vente totale, au dernier PnL affiché (si elle revient telle
-quelle dans la minute, c'était un simple re-rendu : la sortie est annulée).
+plus de 5 s (ou le widget qui disparaît de la page) vaut vente totale, datée du
+moment de la disparition, au dernier PnL affiché (si elle revient telle quelle
+dans la minute, c'était un simple re-rendu : la sortie est annulée). Une position
+est aussi considérée comme soldée quand le reste affiché est à zéro, à « 0 % »,
+ou n'est plus qu'une poussière d'arrondi (moins de 1 % du montant investi). Si
+une sortie échappe malgré tout à la lecture, le lien **j'ai vendu (OUT)** du
+panneau l'enregistre à l'instant, avec le dernier PnL affiché ; le lien
+**diagnostic** (toujours présent) copie ce que l'extension voit du widget.
 
 **Issue du token.** Après le premier achat, le token est ré-analysé
 automatiquement à 5 min, 15 min, 1 h, 4 h et 24 h, même si la page est fermée
