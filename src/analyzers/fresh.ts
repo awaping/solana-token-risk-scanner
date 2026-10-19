@@ -16,9 +16,9 @@ import type { FreshWallet, FreshWalletsAnalysis, HoldersAnalysis } from '../type
 export const FRESH = {
   MAX_AGE_HOURS: 24,
   MAX_TRANSACTIONS: 30,
-  /** Wallets examinés au plus (les plus gros), et part minimale pour l'être. */
-  CHECK_TOP: 12,
-  MIN_PCT: 0.3,
+  /** Wallets examinés au plus (les plus gros, qui portent l'essentiel de la part), et part minimale pour l'être. */
+  CHECK_TOP: 8,
+  MIN_PCT: 0.5,
   CACHE_MS: 5 * 60_000,
 } as const;
 

@@ -16,10 +16,11 @@ import '../src/utils/quiet-warnings.js';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { memoryCache } from '../src/cache.js';
+import { EXTENSION_SCAN } from '../src/config.js';
 import { RpcClient } from '../src/rpc/client.js';
 import { scanToken } from '../src/scanner.js';
 import type { MockChain } from '../test/fixtures/mock-rpc.js';
-import { buildHealthyChain, buildRaydiumChain, buildRugChain } from '../test/fixtures/scenarios.js';
+import { buildDevRugChain, buildHealthyChain, buildRaydiumChain, buildRugChain } from '../test/fixtures/scenarios.js';
 
 const RUNS = Number(process.argv[2] ?? 5);
 const RTT = Number(process.env.RTT ?? 90);
@@ -55,7 +56,6 @@ async function serve(chain: MockChain) {
         return;
       }
       for (const _ of calls) recent.push(now);
-      const delay = RTT + Math.max(...calls.map((c) => SERVER_MS[c.method] ?? 10));
       const answers = calls.map((call) => {
         stats.requests++;
         stats.byMethod.set(call.method, (stats.byMethod.get(call.method) ?? 0) + 1);
@@ -65,6 +65,9 @@ async function serve(chain: MockChain) {
           return { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: (error as Error).message } };
         }
       });
+      // Coût serveur : par méthode, plus la taille de la réponse (1000 signatures : ~0,4 s de plus).
+      const size = (a: { result?: unknown }) => (Array.isArray(a.result) ? a.result.length : 0);
+      const delay = RTT + Math.max(...calls.map((c, i) => (SERVER_MS[c.method] ?? 10) + 0.4 * size(answers[i]!)));
       setTimeout(() => {
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify(Array.isArray(JSON.parse(body)) ? answers : answers[0]));
@@ -79,6 +82,7 @@ const SCENARIOS: Array<[string, () => { chain: MockChain; mint: { toBase58(): st
   ['pump.fun, bonding curve active', buildHealthyChain],
   ['pump.fun migré (PumpSwap)', buildRugChain],
   ['Raydium AMM v4', buildRaydiumChain],
+  ['rug du dev, wallet spammé, 2100 trades', () => buildDevRugChain({ spam: 80, trades: 2_100 })],
 ];
 
 const median = (v: number[]) => [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)]!;
@@ -98,7 +102,7 @@ for (const [name, build] of SCENARIOS) {
     const rpc = new RpcClient({ url, concurrency: CLIENT.concurrency, maxRetries: 4, maxRps: CLIENT.maxRps });
     const started = Date.now();
     const cache = memoryCache();
-    const scanConfig = { rpcUrl: url, concurrency: CLIENT.concurrency, maxRetries: 4, creatorTxScanLimit: 30, mintHistoryMaxPages: 3, holderCensus: true };
+    const scanConfig = { rpcUrl: url, concurrency: CLIENT.concurrency, maxRetries: 4, ...EXTENSION_SCAN, holderCensus: true };
     const result = await scanToken(mint.toBase58(), scanConfig, {
       rpc,
       cache,

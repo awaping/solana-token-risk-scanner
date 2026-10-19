@@ -309,10 +309,14 @@ export async function scanToken(mintAddress: string, config: ScannerConfig, opti
   let finished = false;
   let creatorDone = false;
   let freshDone = false;
+  // L'âge n'attend pas : sur un token très actif, sa lecture est lourde (requête secondaire).
+  let knownAge: TokenAge | undefined;
+  void ageP.then((age) => (knownAge = age));
   void creatorP.then(() => (creatorDone = true));
   void freshP.then(() => (freshDone = true));
   if (options.onPartial) {
-    void Promise.all([holdersP, dustingP, reserveP, ageP]).then(([holders, dusting, reserve, tokenAge]) => {
+    void Promise.all([holdersP, dustingP, reserveP]).then(([holders, dusting, reserve]) => {
+      const tokenAge = knownAge;
       const pending = [...(creatorDone ? [] : ['creator' as const]), ...(freshDone ? [] : ['fresh' as const])];
       if (finished || pending.length === 0) return;
       try {

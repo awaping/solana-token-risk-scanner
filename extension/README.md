@@ -62,12 +62,21 @@ il explique qu'il faut ouvrir la page du token.
 Mesures dans Chromium, RPC simulé (aller-retour 90 ms, offre gratuite Helius
 limitée à 10 requêtes/s), token Pump.fun récent dont le dev a un historique :
 
-| | 1.4.1 | 1.5.0 |
+| | 1.4.1 | 1.5.4 |
 |---|---|---|
-| Ouverture de la page → première note | 5,7 s | **0,8 s** (provisoire) |
-| Lien survolé puis cliqué → première note | 5,6 s | **0,35 s** |
-| Note définitive (historique du dev + wallets frais) | 5,7 s | 5,4 s (1,6 s avec une offre à 50 req/s) |
-| Actualisation ↻ | 5,0 s | **0,7 s** |
+| Ouverture de la page → première note | 5,7 s | **0,9 s** (provisoire) |
+| Lien survolé puis cliqué → première note | 5,6 s | **0,36 s** |
+| Note définitive (historique du dev, rug du dev, wallets frais) | 5,7 s | **3,0 s** (1,0 s avec une offre à 50 req/s) |
+| Lien survolé puis cliqué → note définitive | 5,6 s | **2,6 s** (0,6 s à 50 req/s) |
+| Actualisation ↻ | 5,0 s | **0,9 s** |
+
+Sur une offre gratuite, c'est le nombre de requêtes qui fait la durée (10 par
+seconde au plus) : l'analyse de l'extension en envoie ~25, contre ~45 en 1.5.3.
+Les transactions du dev lues une à une pour compter ses tokens passés sont
+limitées aux 6 plus récentes et aux 6 plus anciennes (sa vente de CE token est
+lue à part, sur son compte de token) ; une seule page de signatures du mint
+(la création d'un token très actif est datée par l'achat du dev) ; 8 gros
+holders examinés pour les wallets frais. Le CLI garde l'analyse complète.
 
 Ce qui fait la différence :
 
@@ -93,7 +102,10 @@ Ce qui fait la différence :
   déjà là ou presque. Elle n'entre dans l'historique que si la page est ouverte.
   Désactivable dans les réglages.
 - **Offre RPC** (réglages) : avec une offre payante, choisis son débit (Helius
-  Developer 50/s, Business 200/s…) : la note définitive passe sous 2 s.
+  Developer 50/s, Business 200/s…) : la note définitive passe à ~1 s.
+- **Débit adaptatif** : si le RPC répond 429 (trop de requêtes), tout le client
+  ralentit aussitôt (−30 %) puis regagne son débit peu à peu, au lieu
+  d'enchaîner les refus qui coûtent chacun une pause.
 - Le panneau démarre dès le début du chargement de la page, et suit les
   navigations internes des terminaux (API Navigation) au lieu d'un relevé
   par seconde.

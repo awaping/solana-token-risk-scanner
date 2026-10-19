@@ -105,11 +105,38 @@ export class RpcScheduler {
   private active = 0;
   private nextSlot = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** Intervalle courant : ralenti après un refus 429, puis ramené peu à peu au réglage. */
+  private intervalMs: number;
+  private successes = 0;
 
   constructor(
     private readonly concurrency: number,
     private readonly minIntervalMs: number,
-  ) {}
+  ) {
+    this.intervalMs = minIntervalMs;
+  }
+
+  /** Débit courant, en requêtes par seconde (Infinity sans plafond). */
+  get rate(): number {
+    return this.intervalMs ? 1000 / this.intervalMs : Infinity;
+  }
+
+  /**
+   * Refus 429 : le fournisseur tolère moins que prévu. On ralentit tout de suite
+   * (−30 %) plutôt que d'enchaîner les refus, qui coûtent chacun une pause.
+   */
+  penalize(): void {
+    if (!this.minIntervalMs) return;
+    this.intervalMs = Math.min(this.intervalMs * 1.43, 1_000);
+    this.successes = 0;
+  }
+
+  /** Réponse obtenue : après 20 succès d'affilée, on regagne 5 % de débit. */
+  reward(): void {
+    if (this.intervalMs <= this.minIntervalMs || ++this.successes < 20) return;
+    this.successes = 0;
+    this.intervalMs = Math.max(this.minIntervalMs, this.intervalMs * 0.95);
+  }
 
   /** Attend une place et un créneau de débit ; renvoie la fonction qui libère la place. */
   acquire(rank: number, signal?: AbortSignal): Promise<() => void> {
@@ -140,14 +167,14 @@ export class RpcScheduler {
         continue;
       }
       const now = Date.now();
-      if (this.minIntervalMs && this.nextSlot > now) {
+      if (this.intervalMs && this.nextSlot > now) {
         this.timer = setTimeout(() => {
           this.timer = null;
           this.pump();
         }, this.nextSlot - now);
         return;
       }
-      this.nextSlot = Math.max(now, this.nextSlot) + this.minIntervalMs;
+      this.nextSlot = Math.max(now, this.nextSlot) + this.intervalMs;
       this.active++;
       let released = false;
       this.queue.splice(index, 1)[0]!.start(() => {
@@ -232,12 +259,15 @@ export class RpcClient {
       const release = await this.scheduler.acquire(this.rank, this.signal);
       this.counter.requests++;
       try {
-        return await request(this.connection);
+        const result = await request(this.connection);
+        this.scheduler.reward();
+        return result;
       } catch (error) {
-        if (attempt >= this.maxRetries || !isTransientError(error)) throw error;
-        // Limite de débit (429) : on laisse au fournisseur le temps de se remettre (1 s, 2 s, 4 s…).
         const message = error instanceof Error ? error.message : String(error);
-        const base = RATE_LIMITED.test(message) ? 1_000 : 500;
+        // Limite de débit (429) : tout le client ralentit, puis la requête est rejouée.
+        if (RATE_LIMITED.test(message)) this.scheduler.penalize();
+        if (attempt >= this.maxRetries || !isTransientError(error)) throw error;
+        const base = RATE_LIMITED.test(message) ? 600 : 500;
         const delay = base * 2 ** attempt + Math.floor(Math.random() * 250);
         attempt++;
         release();

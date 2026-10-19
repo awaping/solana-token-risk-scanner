@@ -340,7 +340,7 @@ export async function analyzeCreator(
   };
   const read = transactionReader(rpc);
   const [history, position, held] = await Promise.all([
-    scanCreatorHistory(rpc, creator, config.creatorTxScanLimit, { read, signatureWindow: 1_000, ...(options.cache ? { cache: options.cache } : {}) }),
+    scanCreatorHistory(rpc, creator, config.creatorTxScanLimit, { read, signatureWindow: config.creatorSignatureWindow ?? 300, ...(options.cache ? { cache: options.cache } : {}) }),
     analyzeDevPosition(rpc, creator, token, { read, ...(options.cache ? { cache: options.cache } : {}) }).catch(() => null),
     (options.holding ?? Promise.resolve(null)).then((known) => known ?? heldFromAccounts()),
   ]);

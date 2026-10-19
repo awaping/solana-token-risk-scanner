@@ -15,6 +15,8 @@ export interface ScannerConfig {
   creatorTxScanLimit: number;
   /** Pages de 1000 signatures parcourues pour retrouver la création du mint. */
   mintHistoryMaxPages: number;
+  /** Signatures du dev lues pour dater et compter son wallet (une requête ; 1000 au plus). */
+  creatorSignatureWindow?: number;
   /** Active le recensement complet des holders (getProgramAccounts). */
   holderCensus: boolean;
   /** Adresse du créateur forcée par l'utilisateur (sinon auto-détectée). */
@@ -70,3 +72,20 @@ export function maskRpcUrl(url: string): string {
     return url;
   }
 }
+
+/**
+ * Réglages de l'extension : l'analyse doit tenir en quelques secondes sur une
+ * offre RPC gratuite (10 requêtes/s), où c'est le nombre de requêtes qui fait
+ * la durée. Le CLI garde ses réglages complets.
+ */
+export const EXTENSION_SCAN = {
+  // Transactions du dev lues une à une pour compter ses tokens passés : les 6 plus
+  // récentes et les 6 plus anciennes. Sa vente de CE token est lue à part, sur
+  // son compte de token (insensible au nombre de transactions).
+  creatorTxScanLimit: 12,
+  // Une page de signatures du mint : assez pour compter l'activité ; la création
+  // d'un token très actif est datée par l'achat du dev à la création.
+  mintHistoryMaxPages: 1,
+  // Signatures du dev pour dater son wallet, même inondé de spams.
+  creatorSignatureWindow: 300,
+} as const;

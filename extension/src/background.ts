@@ -12,6 +12,7 @@
  */
 import { RpcClient } from '../../src/rpc/client.js';
 import { scanToken, parseMint } from '../../src/scanner.js';
+import { EXTENSION_SCAN } from '../../src/config.js';
 import type { ScanResult } from '../../src/types.js';
 import { compareVersions } from '../../src/update/version.js';
 import { chromeLocalStore } from './chrome-store.js';
@@ -240,10 +241,8 @@ export async function scan(mintArg: string, request: ScanRequest = {}): Promise<
     rpcUrl: settings.rpcUrl,
     concurrency: 3,
     maxRetries: 4,
-    // 30 transactions suffisent à repérer un déployeur en série, pour ~3 fois
-    // moins de requêtes que l'historique complet du CLI (offres RPC gratuites).
-    creatorTxScanLimit: 30,
-    mintHistoryMaxPages: 3,
+    // Réglages allégés pour tenir en quelques secondes sur une offre RPC gratuite.
+    ...EXTENSION_SCAN,
     holderCensus: settings.holderCensus,
   }, {
     rpc,

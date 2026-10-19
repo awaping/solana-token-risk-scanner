@@ -129,7 +129,8 @@ test('RpcClient : un 429 est rejoué après une pause', async () => {
   });
   assert.equal(value, 'ok');
   assert.equal(attempts, 2);
-  assert.ok(Date.now() - started >= 950, 'pause d’au moins 1 s après un 429');
+  // Pause plus courte qu'avant (0,6 s) : c'est le débit de tout le client qui baisse après un 429.
+  assert.ok(Date.now() - started >= 550, 'pause après un 429');
 });
 
 test('RpcClient : sous le plafond de débit, les requêtes prioritaires partent d’abord', async () => {
@@ -144,4 +145,27 @@ test('RpcClient : sous le plafond de débit, les requêtes prioritaires partent 
   await Promise.all(pending);
   // La première requête basse était déjà partie ; ensuite les hautes passent devant.
   assert.deepEqual(order, ['bas1', 'haut1', 'haut2', 'bas2', 'bas3']);
+});
+
+test('RpcScheduler : un 429 ralentit tout le client, le débit revient peu à peu', async () => {
+  const { RpcScheduler } = await import('../src/rpc/client.js');
+  const scheduler = new RpcScheduler(4, 100); // 10 requêtes/s
+  assert.equal(Math.round(scheduler.rate), 10);
+  scheduler.penalize();
+  assert.ok(scheduler.rate < 7.1 && scheduler.rate > 6.9, `${scheduler.rate}`);
+  for (let i = 0; i < 20; i++) scheduler.reward();
+  assert.ok(scheduler.rate > 7.2 && scheduler.rate < 10);
+  for (let i = 0; i < 2_000; i++) scheduler.reward();
+  assert.equal(Math.round(scheduler.rate), 10, 'jamais au-delà du réglage');
+});
+
+test('RpcClient : refus 429 du fournisseur → ralentissement et rejeu, sans erreur', async () => {
+  const client = new RpcClient({ url: 'http://127.0.0.1:1', concurrency: 2, maxRetries: 2, maxRps: 50 });
+  let calls = 0;
+  const value = await client.call(async () => {
+    if (++calls === 1) throw new Error('429 Too Many Requests');
+    return 'ok';
+  });
+  assert.equal(value, 'ok');
+  assert.equal(calls, 2);
 });
