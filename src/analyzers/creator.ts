@@ -129,6 +129,8 @@ export function extractInitializedMints(tx: ParsedTransactionWithMeta): string[]
 export interface CreatorHistory {
   solBalance: number;
   createdMints: string[];
+  /** Tokens entrés (achat, réception) et sortis (vente, cession) du wallet, par mint, dans les transactions inspectées. */
+  tokenFlows: Map<string, { in: bigint; out: bigint }>;
   txScanned: number;
   fullHistory: boolean;
   signatureCount: number;
@@ -141,9 +143,24 @@ export interface CreatorHistory {
  * mints qu'il a initialisés (InitializeMint / InitializeMint2 signés par lui).
  * Partagé par le scan complet et l'enrichissement asynchrone du mode stream.
  */
-/** Transactions d'un créateur déjà lues : mints qu'il y a initialisés (vide si aucun). */
-type KnownTransactions = Record<string, string[]>;
+/**
+ * Ce qu'une transaction du créateur a fait : mints qu'il y a initialisés (`m`),
+ * et variation de ses soldes de tokens par mint, en unités brutes (`d`).
+ */
+interface TxFacts {
+  m: string[];
+  d: Record<string, string>;
+}
+type KnownTransactions = Record<string, TxFacts>;
 const CREATOR_CACHE_MS = 30 * 60_000;
+
+/** Variation des soldes de tokens d'un wallet dans une transaction (post − pre, par mint). */
+export function tokenDeltas(tx: ParsedTransactionWithMeta, owner: string): Record<string, string> {
+  const sum = new Map<string, bigint>();
+  for (const b of tx.meta?.preTokenBalances ?? []) if (b.owner === owner) sum.set(b.mint, (sum.get(b.mint) ?? 0n) - BigInt(b.uiTokenAmount.amount));
+  for (const b of tx.meta?.postTokenBalances ?? []) if (b.owner === owner) sum.set(b.mint, (sum.get(b.mint) ?? 0n) + BigInt(b.uiTokenAmount.amount));
+  return Object.fromEntries([...sum].filter(([, v]) => v !== 0n).map(([k, v]) => [k, v.toString()]));
+}
 
 export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, scanLimit: number, cache?: ScanCache): Promise<CreatorHistory> {
   const cacheKey = `creator-tx:${creator.toBase58()}`;
@@ -155,22 +172,32 @@ export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, sca
   ]);
 
   const created = new Set<string>();
+  const tokenFlows = new Map<string, { in: bigint; out: bigint }>();
+  const owner = creator.toBase58();
   const toScan = scanLimit > 0 ? signatures.filter((s) => s.err === null).slice(0, scanLimit) : [];
   const seen: KnownTransactions = {};
   // Transactions déjà lues lors d'une analyse précédente (même dev, ↻, suivi) : pas relues.
   await Promise.all(
     toScan.map(async ({ signature }) => {
-      let mints = known[signature];
-      if (!mints) {
+      const cached = known[signature];
+      let facts = cached && !Array.isArray(cached) ? cached : undefined;
+      if (!facts) {
         const tx = await rpc
           .call((c) => c.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 }))
           .catch(() => null);
         if (!tx) return;
         const signedByCreator = tx.transaction.message.accountKeys.some((k) => k.signer && k.pubkey.equals(creator));
-        mints = signedByCreator ? extractInitializedMints(tx) : [];
+        facts = { m: signedByCreator ? extractInitializedMints(tx) : [], d: tokenDeltas(tx, owner) };
       }
-      seen[signature] = mints;
-      for (const m of mints) created.add(m);
+      seen[signature] = facts;
+      for (const m of facts.m) created.add(m);
+      for (const [mint, raw] of Object.entries(facts.d)) {
+        const delta = BigInt(raw);
+        const flow = tokenFlows.get(mint) ?? { in: 0n, out: 0n };
+        if (delta > 0n) flow.in += delta;
+        else flow.out -= delta;
+        tokenFlows.set(mint, flow);
+      }
     }),
   );
   const txScanned = Object.keys(seen).length;
@@ -183,6 +210,7 @@ export async function scanCreatorHistory(rpc: RpcClient, creator: PublicKey, sca
   return {
     solBalance: lamportsToSol(BigInt(lamports)),
     createdMints: [...created],
+    tokenFlows,
     txScanned,
     fullHistory,
     signatureCount: signatures.length,
@@ -222,10 +250,14 @@ export async function analyzeCreator(
     (options.holding ?? Promise.resolve(null)).then((known) => known ?? heldFromAccounts()),
   ]);
 
+  const { tokenFlows, ...rest } = history;
+  const flow = tokenFlows.get(token.mint);
   return {
     address: identity.address,
     source: identity.source,
-    ...history,
+    ...rest,
+    ...(flow && flow.in > 0n ? { boughtPct: percentOf(flow.in, token.supply) } : {}),
+    ...(flow && flow.out > 0n ? { soldPct: percentOf(flow.out, token.supply) } : {}),
     holdingPct: percentOf(held, token.supply),
     previousTokensCreated: history.createdMints.filter((m) => m !== token.mint).length,
   };

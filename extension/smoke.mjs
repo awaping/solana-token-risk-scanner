@@ -25,7 +25,7 @@ function fakeChrome(calls) {
       onStartup: listener(),
       onInstalled: listener(),
       id: 'smoke-test',
-      getManifest: () => ({ version: '1.5.1' }),
+      getManifest: () => ({ version: '1.5.2' }),
       getURL: (path) => `chrome-extension://smoke-test/${path}`,
       sendMessage: async () => ({ ok: true }),
       sendNativeMessage: async () => {

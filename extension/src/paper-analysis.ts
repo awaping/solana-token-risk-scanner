@@ -5,7 +5,8 @@
  *
  * Définitions (capitalisation en SOL, donc indépendante du cours du SOL) :
  *   run  — la capitalisation a au moins doublé après l'achat ;
- *   rug  — elle a perdu 70 % ou plus (ou la réserve s'est vidée à 90 %) sans doubler avant ;
+ *   rug  — elle a perdu 50 % ou plus (ou la réserve s'est vidée à 90 %, ou le dev a
+ *          tout revendu et vidé son wallet) sans doubler avant ;
  *   neutre — ni l'un ni l'autre à la ré-analyse de 4 h.
  * Les ré-analyses automatiques (5 min, 15 min, 1 h, 4 h, 24 h après l'achat)
  * fournissent ces mesures même si la page a été fermée.
@@ -18,7 +19,7 @@ export type MarketOutcome = 'run' | 'rug' | 'neutre' | 'en cours' | 'inconnu';
 export type TradeResult = 'gain' | 'perte' | 'nul';
 
 export const RUN_X = 2;
-export const RUG_X = 0.3;
+export const RUG_X = 0.5;
 const RESERVE_RUG = 0.1;
 /** Un peu moins de 4 h : la ré-analyse « 4 h » tombe 4 h après l'achat, quelques secondes avant l'analyse d'entrée + 4 h. */
 export const DECIDED_AFTER_MS = 3.5 * 3_600_000;
@@ -91,13 +92,15 @@ function market(coin: CoinHistory, entry: ScanPoint | undefined, now: number): P
   const base = entry?.metrics.marketCapSol;
   if (!entry || !base || base <= 0) return { market: 'inconnu' };
   const later = coin.scans.filter((s) => s.at > entry.at && s.metrics.marketCapSol !== undefined);
-  if (later.length === 0) return { market: now - entry.at > 2 * DECIDED_AFTER_MS ? 'inconnu' : 'en cours' };
+  // Rug du dev constaté à l'achat ou après : c'est un rug, même avant que le prix ne s'effondre.
+  const devRug = coin.scans.some((s) => s.at >= entry.at && s.alerts.some((a) => a.message.startsWith('Rug du dev')));
+  if (later.length === 0) return { market: devRug ? 'rug' : now - entry.at > 2 * DECIDED_AFTER_MS ? 'inconnu' : 'en cours' };
   const peakX = Math.max(...later.map((s) => s.metrics.marketCapSol!)) / base;
   const last = later[later.length - 1]!;
   const lastX = last.metrics.marketCapSol! / base;
   const reserve = entry.metrics.reserveSol;
   const drained = reserve !== undefined && reserve > 0 && last.metrics.reserveSol !== undefined && last.metrics.reserveSol <= reserve * RESERVE_RUG;
-  const collapsed = lastX <= RUG_X || drained;
+  const collapsed = lastX <= RUG_X || drained || devRug;
   if (peakX >= RUN_X) return { market: 'run', peakX, lastX, ...(collapsed ? { thenRug: true } : {}) };
   if (collapsed) return { market: 'rug', peakX, lastX };
   return { market: last.at - entry.at >= DECIDED_AFTER_MS ? 'neutre' : 'en cours', peakX, lastX };
@@ -169,7 +172,7 @@ export const ENTRY_METRICS: EntryMetric[] = [
 export type Comparison = 'market' | 'result';
 
 export const GROUPS: Record<Comparison, { a: string; b: string; aLabel: string; bLabel: string; aShort: string; bShort: string }> = {
-  market: { a: 'run', b: 'rug', aLabel: 'Run (×2 ou plus)', bLabel: 'Rug (−70 % ou plus)', aShort: 'Run', bShort: 'Rug' },
+  market: { a: 'run', b: 'rug', aLabel: 'Run (×2 ou plus)', bLabel: 'Rug (−50 % ou plus)', aShort: 'Run', bShort: 'Rug' },
   result: { a: 'gain', b: 'perte', aLabel: 'Trades gagnants', bLabel: 'Trades perdants', aShort: 'Gagnants', bShort: 'Perdants' },
 };
 

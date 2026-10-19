@@ -427,7 +427,12 @@ export function scoreReserve(r: ReserveAnalysis): SubScore {
 // Créateur
 // ---------------------------------------------------------------------------
 
-export function scoreCreator(cr: CreatorAnalysis): SubScore {
+/**
+ * `tokenAgeHours` : âge du token. Un dev qui solde tout sur un token de
+ * quelques minutes, c'est un rug ; sur un token de plusieurs jours, beaucoup
+ * moins nettement.
+ */
+export function scoreCreator(cr: CreatorAnalysis, tokenAgeHours?: number): SubScore {
   const findings: Finding[] = [];
   const floors: ScoreFloor[] = [];
   const window = cr.fullHistory ? 'sur tout son historique' : `sur ses ${fmtNum(cr.txScanned)} dernières transactions`;
@@ -463,7 +468,21 @@ export function scoreCreator(cr: CreatorAnalysis): SubScore {
     walletFacts.push(`quasiment vidé (${fmtSol(cr.solBalance)})`);
   }
 
-  if (cr.holdingPct === 0) {
+  const sold = cr.soldPct ?? 0;
+  const freshWallet = (cr.fullHistory && cr.signatureCount < 15) || (cr.walletAgeDays !== undefined && cr.walletAgeDays < 2);
+  const emptied = cr.solBalance < 0.05;
+  const young = tokenAgeHours === undefined || tokenAgeHours < 24;
+  if (cr.holdingPct === 0 && sold > 0) {
+    // Le dev a acheté (ou reçu) des tokens puis tout revendu : la séquence d'un rug.
+    score += 35;
+    if (young && (freshWallet || emptied)) {
+      const how = [emptied ? 'vidé son wallet' : '', freshWallet ? 'wallet jetable' : ''].filter(Boolean).join(', ');
+      findings.push({ severity: 'critical', message: `Rug du dev : il a vendu ou cédé toute sa position (${fmtPct(sold)} de la supply) — ${how}` });
+      floors.push({ floor: freshWallet && emptied ? 80 : 70, reason: `Rug du dev : position soldée (${fmtPct(sold)} de la supply), ${how}` });
+    } else {
+      findings.push({ severity: 'critical', message: `Le dev a vendu ou cédé toute sa position (${fmtPct(sold)} de la supply)` });
+    }
+  } else if (cr.holdingPct === 0) {
     score += 10;
     findings.push({ severity: 'warning', message: 'Le créateur ne détient plus aucun token (vendu ou transféré)' });
   } else if (cr.holdingPct > 20) {
@@ -474,6 +493,10 @@ export function scoreCreator(cr: CreatorAnalysis): SubScore {
     findings.push({ severity: 'warning', message: `Le créateur détient ${fmtPct(cr.holdingPct)} de la supply` });
   } else {
     findings.push({ severity: 'ok', message: `Le créateur détient ${fmtPct(cr.holdingPct)} de la supply` });
+  }
+  if (cr.holdingPct > 0 && sold > 0) {
+    score += 15;
+    findings.push({ severity: 'warning', message: `Le dev a déjà vendu ou cédé ${fmtPct(sold)} de la supply (il lui en reste ${fmtPct(cr.holdingPct)})` });
   }
 
   if (walletFacts.length > 0) {
@@ -496,6 +519,8 @@ export interface ScoringInput {
   holders: ModuleOutcome<HoldersAnalysis>;
   clustering: ModuleOutcome<ClusteringAnalysis>;
   fresh?: ModuleOutcome<FreshWalletsAnalysis>;
+  /** Âge du token (h), s'il est connu. */
+  tokenAgeHours?: number;
   dusting: ModuleOutcome<DustingAnalysis>;
   reserve: ModuleOutcome<ReserveAnalysis>;
   creator: ModuleOutcome<CreatorAnalysis>;
@@ -521,7 +546,7 @@ export function computeRiskScore(input: ScoringInput): RiskScore {
     toModuleScore('clustering', input.clustering, (d) => scoreClustering(d, top20Pct, input.fresh), floors),
     toModuleScore('dusting', input.dusting, scoreDusting, floors),
     toModuleScore('reserve', input.reserve, scoreReserve, floors),
-    toModuleScore('creator', input.creator, scoreCreator, floors),
+    toModuleScore('creator', input.creator, (d) => scoreCreator(d, input.tokenAgeHours), floors),
   ];
 
   const available = modules.filter((m) => m.score !== null);

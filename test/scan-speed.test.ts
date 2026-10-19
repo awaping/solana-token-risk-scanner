@@ -165,3 +165,21 @@ test('relais : le plus rapide gagne ; un échec bascule sur l’autre ; deux éc
   assert.equal(await hedge(Promise.reject(new Error('x')), () => wait(10, 'relais'), 5_000), 'relais');
   await assert.rejects(hedge(Promise.reject(new Error('a')), () => Promise.reject(new Error('b')), 10));
 });
+
+test('rug du dev (cas réel) : vendu toute sa position puis vidé son wallet → ROUGE, pas 17', async () => {
+  const { buildDevRugChain } = await import('./fixtures/scenarios.js');
+  const { chain, mint } = buildDevRugChain();
+  const { url } = await serve(chain);
+  const result = await scanToken(mint.toBase58(), config(url));
+  assert.equal(result.creator.status, 'ok');
+  if (result.creator.status === 'ok') {
+    assert.ok(Math.abs(result.creator.data.soldPct! - 5) < 1e-9, `vendu ${result.creator.data.soldPct}`);
+    assert.ok(Math.abs(result.creator.data.boughtPct! - 5) < 1e-9);
+    assert.equal(result.creator.data.holdingPct, 0);
+  }
+  assert.equal(result.risk.level, 'ROUGE', `note ${result.risk.score}`);
+  assert.ok(result.risk.score >= 80);
+  const creator = result.risk.modules.find((m) => m.id === 'creator')!;
+  assert.ok(creator.findings.some((f) => f.severity === 'critical' && f.message.startsWith('Rug du dev')), JSON.stringify(creator.findings));
+  assert.match(result.risk.floors[0]!.reason, /Rug du dev/);
+});

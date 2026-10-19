@@ -132,3 +132,31 @@ export const SCENARIOS = {
   healthy: buildHealthyChain,
   raydium: buildRaydiumChain,
 } as const;
+
+/**
+ * Scénario 4 : rug du dev sur un token Pump.fun d'une minute (cas réel signalé).
+ * Wallet du dev tout neuf ; il crée le token en achetant 5 % de la supply, revend
+ * tout 30 s plus tard puis vide son wallet. La courbe ne garde que ~2,4 SOL et les
+ * holders restants sont dispersés (top 10 ≈ 4 %).
+ */
+export function buildDevRugChain() {
+  const chain = new MockChain();
+  const mint = randomKey();
+  const creator = randomKey();
+  const now = Math.floor(Date.now() / 1000);
+  chain.addMint({ mint, supply: SUPPLY });
+  chain.setAccount(creator, SystemProgram.programId, Buffer.alloc(0), 5_852_000); // 0,005852 SOL
+
+  const state = curveStateAt(32_360_000_000n); // ≈ 2,36 SOL réels
+  const curve = bondingCurvePda(mint);
+  chain.setAccount(curve, PUMP_FUN_PROGRAM_ID, encodeBondingCurve({ ...state, creator }), Number(state.realSolReserves + rentExemptMinimum(150)));
+  chain.addTokenAccount(mint, curve, state.realTokenReserves + 206_900_000_000_000n);
+  for (let k = 0; k < 40; k++) chain.addTokenAccount(mint, randomKey(), pctOf(0.4 + (k % 5) * 0.02));
+
+  const devBag = pctOf(5);
+  chain.addTransaction([creator, mint], { signer: creator, innerInstructions: [initMint2(mint)], tokenBalances: [{ mint, owner: creator, amount: devBag }], blockTime: now - 72 });
+  chain.addTransaction([creator], { signer: creator, preTokenBalances: [{ mint, owner: creator, amount: devBag }], tokenBalances: [{ mint, owner: creator, amount: 0n }], blockTime: now - 40 });
+  chain.addTransaction([creator], { signer: creator, blockTime: now - 30 }); // SOL envoyés ailleurs
+  for (let i = 0; i < 60; i++) chain.addTransaction([mint], { signer: randomKey(), blockTime: now - 70 + i });
+  return { chain, mint, creator };
+}

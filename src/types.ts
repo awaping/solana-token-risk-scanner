@@ -236,6 +236,12 @@ export interface CreatorAnalysis {
   solBalance: number;
   /** Part de la supply du token analysé encore détenue par le créateur (%). */
   holdingPct: number;
+  /**
+   * Part de la supply de ce token achetée (ou reçue) puis vendue (ou cédée) par
+   * le créateur, dans les transactions inspectées (%).
+   */
+  boughtPct?: number;
+  soldPct?: number;
   /** Mints créés dans la fenêtre inspectée (token analysé inclus). */
   createdMints: string[];
   /** Tokens créés précédemment (hors token analysé). */

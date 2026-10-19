@@ -135,7 +135,7 @@ test('renfort = nouvel achat ; courbe du PnL bornée à un point toutes les 30 s
   assert.deepEqual(coin.paper!.trades.map((t) => t.bought?.value), [1, 1.5]);
 });
 
-test('suivi après l’achat : run (×2), rug (−70 %), neutre après 4 h', async () => {
+test('suivi après l’achat : run (×2), rug (−50 %), neutre après 4 h', async () => {
   const store = new HistoryStore(memoryStore());
   const scenario = async (mint: string, caps: Array<[number, number]>, reserve?: number[]) => {
     await store.record(snap(mint, T0, 40, { mcap: 30, reserve: 10 }));
@@ -358,4 +358,21 @@ test('sortie par disparition : PnL du widget (plus frais que la dernière écrit
   const exit = (await store.get('FRESH'))!.paper!.trades.at(-1)!;
   assert.equal(exit.closes, true);
   assert.equal(exit.pnl?.value, 0.45);
+});
+
+test('rug du dev constaté après l’achat : issue « rug » même si la capitalisation n’a pas encore chuté de moitié', async () => {
+  const store = new HistoryStore(memoryStore());
+  await store.record(snap('DEVRUG', T0, 22, { mcap: 50 }));
+  await store.attachPaper('DEVRUG', { bought: sol(0.25) }, { at: T0 + 1_000, observed: true });
+  await store.record(snap('DEVRUG', T0 + 3_000, 22, { trigger: 'entrée', mcap: 50 }));
+  await store.record(snap('DEVRUG', T0 + 20_000, 85, { trigger: 'actualisation', mcap: 30, alerts: ['Rug du dev : il a vendu ou cédé toute sa position (5,00 % de la supply) — vidé son wallet, wallet jetable'] }));
+  const outcome = coinOutcome((await store.get('DEVRUG'))!, T0 + 30_000)!;
+  assert.equal(outcome.market, 'rug');
+  // −52 % : rug avec le nouveau seuil.
+  const store2 = new HistoryStore(memoryStore());
+  await store2.record(snap('DROP', T0, 22, { mcap: 50 }));
+  await store2.attachPaper('DROP', { bought: sol(0.25) }, { at: T0 + 1_000, observed: true });
+  await store2.record(snap('DROP', T0 + 3_000, 22, { trigger: 'entrée', mcap: 50 }));
+  await store2.record(snap('DROP', T0 + 300_000, 30, { trigger: 'suivi', mcap: 24 }));
+  assert.equal(coinOutcome((await store2.get('DROP'))!, T0 + 400_000)!.market, 'rug');
 });

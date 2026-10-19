@@ -267,7 +267,8 @@ export async function scanToken(mintAddress: string, config: ScannerConfig, opti
     }
     const clustering: ScanResult['clustering'] =
       holders.status === 'ok' ? { status: 'ok', data: analyzeClustering(holders.data.wallets) } : unavailable('dépend du module holders (indisponible)');
-    const risk = computeRiskScore({ token, holders, clustering, ...(fresh ? { fresh } : {}), dusting, reserve, creator });
+    const tokenAgeHours = tokenAge ? (Date.now() - tokenAge.createdAt.getTime()) / 3_600_000 : undefined;
+    const risk = computeRiskScore({ token, holders, clustering, ...(fresh ? { fresh } : {}), ...(tokenAgeHours !== undefined ? { tokenAgeHours } : {}), dusting, reserve, creator });
     return {
       mint: token.mint,
       ...(resolvedFrom ? { resolvedFrom } : {}),

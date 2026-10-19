@@ -91,6 +91,8 @@ export class MockChain {
       innerInstructions?: Json[];
       blockTime?: number;
       tokenBalances?: Array<{ mint: PublicKey; owner: PublicKey; amount: bigint }>;
+      /** Soldes de tokens avant la transaction (vente : avant > après). */
+      preTokenBalances?: Array<{ mint: PublicKey; owner: PublicKey; amount: bigint }>;
     },
   ): string {
     const signature = Keypair.generate().publicKey.toBase58() + Keypair.generate().publicKey.toBase58().slice(0, 20);
@@ -112,7 +114,13 @@ export class MockChain {
         preBalances: [0],
         postBalances: [0],
         logMessages: [],
-        preTokenBalances: [],
+        preTokenBalances: (tx.preTokenBalances ?? []).map((b, i) => ({
+          accountIndex: i,
+          mint: b.mint.toBase58(),
+          owner: b.owner.toBase58(),
+          programId: TOKEN_PROGRAM_ID.toBase58(),
+          uiTokenAmount: { amount: b.amount.toString(), decimals: 6, uiAmount: Number(b.amount) / 1e6, uiAmountString: String(Number(b.amount) / 1e6) },
+        })),
         postTokenBalances: (tx.tokenBalances ?? []).map((b, i) => ({
           accountIndex: i,
           mint: b.mint.toBase58(),

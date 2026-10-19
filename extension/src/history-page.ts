@@ -129,7 +129,7 @@ const MARKET_LABEL: Record<MarketOutcome, string> = { run: 'run', rug: 'rug', ne
 
 function marketTag(market: MarketOutcome, peakX?: number, thenRug?: boolean): HTMLElement {
   const text = market === 'run' ? `run ×${nf(peakX, 1)}${thenRug ? ' puis rug' : ''}` : MARKET_LABEL[market];
-  return h('span', { class: `tag ${market === 'run' ? 'run' : market === 'rug' ? 'rug' : ''}`, title: 'Capitalisation après l’achat : run = ×2 ou plus, rug = −70 % ou plus' }, text);
+  return h('span', { class: `tag ${market === 'run' ? 'run' : market === 'rug' ? 'rug' : ''}`, title: 'Capitalisation après l’achat : run = ×2 ou plus, rug = −50 % ou plus, ou rug du dev' }, text);
 }
 
 const TRIGGER_LABEL: Record<ScanTrigger, string> = { ouverture: 'ouverture', actualisation: 'actualisation', entrée: 'achat (IN)', suivi: 'suivi auto' };
@@ -928,7 +928,7 @@ async function renderAnalysis(): Promise<void> {
         h('tbody', {}, ...tradeRows),
       ),
     ),
-    h('p', { class: 'muted' }, '* position déjà ouverte à l’ouverture de la page : âge mesuré à la première lecture. Run = capitalisation ×2 ou plus après l’achat ; rug = −70 % ou plus (ou réserve vidée) ; neutre = ni l’un ni l’autre à 4 h.'),
+    h('p', { class: 'muted' }, '* position déjà ouverte à l’ouverture de la page : âge mesuré à la première lecture. Run = capitalisation ×2 ou plus après l’achat ; rug = −50 % ou plus (ou réserve vidée, ou rug du dev) ; neutre = ni l’un ni l’autre à 4 h.'),
   );
 }
 

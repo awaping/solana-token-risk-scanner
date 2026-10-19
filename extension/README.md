@@ -223,7 +223,8 @@ automatiquement à 5 min, 15 min, 1 h, 4 h et 24 h, même si la page est fermée
 (reprise au redémarrage du navigateur). Sa capitalisation (en SOL) dit s'il a :
 
 - **run** : au moins ×2 après l'achat ;
-- **rug** : −70 % ou plus (ou réserve vidée à 90 %) sans avoir doublé avant ;
+- **rug** : −50 % ou plus (ou réserve vidée à 90 %, ou rug du dev : il a tout
+  revendu et vidé son wallet) sans avoir doublé avant ;
 - **neutre** : ni l'un ni l'autre à 4 h.
 
 **Page « Paper trading & analyse »** (bouton en haut de l'historique) : solde
